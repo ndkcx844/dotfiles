@@ -1,0 +1,262 @@
+# -*-Shell-script-*-
+#
+# This file is not a stand-alone shell script.
+# This provides functions to array that source it.
+
+function array-escape() {
+	[ $# = 0 ] && return 0
+
+	local ARRAY=() VAL
+	for VAL in "$@"; do
+		ARRAY+=("$(bash-escape "$VAL")")
+	done
+	echo "${ARRAY[@]}"
+}
+
+function array-quote() {
+	[ $# = 0 ] && return 0
+
+	local ARRAY=() VAL
+	for VAL in "$@"; do
+		VAL="${VAL//\'/\'\\\'\'}"
+		ARRAY+=("'$VAL'")
+	done
+	echo "${ARRAY[@]}"
+}
+
+function array-quote-if-needed() {
+	[ $# = 0 ] && return 0
+
+	local ARRAY=() VAL
+	for VAL in "$@"; do
+		if [[ "$VAL" =~ [[:space:]] ]]; then
+			VAL="${VAL//\'/\'\\\'\'}"
+			ARRAY+=("'$VAL'")
+		else
+			ARRAY+=("$VAL")
+		fi
+	done
+	echo "${ARRAY[@]}"
+}
+
+function array-uniq() {
+	[ $# = 0 ] && return 0
+
+	local TYPE=normal
+	while [ $# != 0 ]; do
+		case "$1" in
+			-d|--repeated)
+				TYPE=only-repeated
+				;;
+			-u|--uniqed)
+				TYPE=only-uniqed
+				;;
+			--)
+				shift
+				break
+				;;
+			*)
+				break
+				;;
+		esac
+		shift
+	done
+	[ $# = 0 ] && return
+
+	local -A HASH ITEM
+	for ITEM in "${@:+$@}"; do
+		HASH[$ITEM]=$((${HASH[$ITEM]} + 1))
+	done
+
+	case "$TYPE" in
+		normal)
+			echo "${!HASH[@]}"
+			;;
+		only-repeated)
+			for ITEM in "${!HASH[@]}"; do
+				[ ${HASH[$ITEM]} = 1 ] && continue
+				echo $ITEM
+			done
+			;;
+		only-uniqed)
+			for ITEM in "${!HASH[@]}"; do
+				[ ${HASH[$ITEM]} = 1 ] || continue
+				echo $ITEM
+			done
+			;;
+	esac
+}
+
+function array-join() {
+	[ $# = 0 ] && return 0
+
+	local TYPE=only-both
+	while [ $# != 0 ]; do
+		case "$1" in
+			-v)
+				case "$2" in
+					1)
+						TYPE=only-left
+						;;
+					2)
+						TYPE=only-right
+						;;
+					*)
+						echo "error: unrecognized parameter: $2" >&2
+						return 255
+						;;
+				esac
+				shift
+				;;
+			--)
+				shift
+				break
+				;;
+			*)
+				break
+				;;
+		esac
+		shift
+	done
+	local NUM1="${1:?error: Usage: ${FUNCNAME[0]} '${#ARRAY1[*]}' '${ARRAY1[*]}' '${#ARRAY2[*]}' '${ARRAY2[*]}'}"
+	shift
+	local ARRAY1=()
+	readarray -t ARRAY1 < <(array-uniq "${@:1:$NUM1}")
+	shift "$NUM1"
+	local NUM2="${1:?error: Usage: ${FUNCNAME[0]} '${#ARRAY1[*]}' '${ARRAY1[*]}' '${#ARRAY2[*]}' '${ARRAY2[*]}'}"
+	shift
+	local ARRAY2=()
+	readarray -t ARRAY2 < <(array-uniq "${@:1:$NUM2}")
+	shift "$NUM2"
+
+	case "$TYPE" in
+		only-both)
+			for E in "${ARRAY1[@]}"; do
+				[[ ${ARRAY2[*]} =~ (^|[$IFS])$E($|[$IFS]) ]] || continue
+				echo "$E"
+			done
+			;;
+		only-left)
+			for E in "${ARRAY1[@]}"; do
+				[[ ${ARRAY2[*]} =~ (^|[$IFS])$E($|[$IFS]) ]] && continue
+				echo "$E"
+			done
+			;;
+		only-right)
+			for E in "${ARRAY2[@]}"; do
+				[[ ${ARRAY1[*]} =~ (^|[$IFS])$E($|[$IFS]) ]] && continue
+				echo "$E"
+			done
+			;;
+	esac
+}
+
+function array-prepend() {
+	local ENTRY="${1:?error: Usage ${FUNCNAME[0]} ENTRY ARRAY}"
+	if [ "$2" = at ]; then
+		local ARRNAME="$3"
+		eval "$ARRNAME=(\"$ENTRY\" \"\${${ARRNAME}[@]}\")"
+	else
+		# Usage1. IFS=$'\n' ARRAY=($(array-prepend $ENTRY in ${ARRAY[@]}))
+		# Usage2. readarray -t ARRAY < <(array-prepend $ENTRY in ${ARRAY[@]})
+		[ "$2" = in ] && shift
+		shift
+		echo "$ENTRY"
+		local ARRVAL
+		for ARRVAL in "$@"; do
+			echo "$ARRVAL"
+		done
+	fi
+}
+
+function array-append() {
+	local ENTRY="${1:?error: Usage ${FUNCNAME[0]} ENTRY ARRAY}"
+	if [ "$2" = at ]; then
+		local ARRNAME="$3"
+		eval "$ARRNAME=(\"\${${ARRNAME}[@]}\" \"$ENTRY\")"
+	else
+		# Usage1. IFS=$'\n' ARRAY=($(array-append $ENTRY in ${ARRAY[@]}))
+		# Usage2. readarray -t ARRAY < <(array-append $ENTRY in ${ARRAY[@]})
+		[ "$2" = in ] && shift
+		shift
+		local ARRVAL
+		for ARRVAL in ${@:+"$@"}; do
+			echo "$ARRVAL"
+		done
+		echo "$ENTRY"
+	fi
+}
+
+function array-insert() {
+	local INDEX="${1:?error: Usage ${FUNCNAME[0]} INDEX ENTRY ARRAY}"
+	local ENTRY="${2:?error: Usage ${FUNCNAME[0]} INDEX ENTRY ARRAY}"
+	shift
+	if [ "$2" = at ]; then
+		local ARRNAME="$3"
+		local FIRST_HALF=() LAST_HALF=()
+		# XXX: ARRNAME[*] だと結合される
+		eval "FIRST_HALF=(\"\${${ARRNAME}[@]:0:$INDEX}\")"
+		eval "LAST_HALF=(\"\${${ARRNAME}[@]:$INDEX}\")"
+		eval "$ARRNAME=(\"\${FIRST_HALF[@]}\" \"$ENTRY\" \"\${LAST_HALF[@]}\")"
+	else
+		# Usage1. IFS=$'\n' ARRAY=($(array-insert $ENTRY in ${ARRAY[@]}))
+		# Usage2. readarray -t ARRAY < <(array-insert $ENTRY in ${ARRAY[@]})
+		[ "$2" = in ] && shift
+		shift
+		local ARRVAL
+		for ARRVAL in ${@:+"$@"}; do
+			echo "$ARRVAL"
+		done
+		echo "$ENTRY"
+	fi
+}
+
+function array-replace() {
+	local PATTERN="${1:?error: Usage ${FUNCNAME[0]} PATTERN KEYWORD ARRAY}"
+	local KEYWORD="${2:?error: Usage ${FUNCNAME[0]} PATTERN KEYWORD ARRAY}"
+	shift
+	if [ "$2" = at ]; then
+		local ARRNAME="$3" ARRVALS=()
+		eval "ARRVALS=(\"\${${ARRNAME}[@]}\")"
+		eval "$ARRNAME=()"
+		local ARRVAL
+		for ARRVAL in ${ARRVALS[@]:+"${ARRVALS[@]}"}; do
+			if [[ "$ARRVAL" =~ ^$PATTERN$ ]]; then
+				eval "$ARRNAME+=(\"$KEYWORD\")"
+			else
+				eval "$ARRNAME+=(\"$ARRVAL\")"
+			fi
+		done
+	else
+		# Usage1. IFS=$'\n' ARRAY=($(array-replace $KEYWORD in ${ARRAY[@]}))
+		# Usage2. readarray -t ARRAY < <(array-replace $KEYWORD in ${ARRAY[@]})
+		[ "$2" = in ] && shift
+		shift
+		local ARRVAL
+		for ARRVAL in ${@:+"$@"}; do
+			if [[ "$ARRVAL" =~ ^$PATTERN$ ]]; then
+				echo "$KEYWORD"
+			else
+				echo "$ARRVAL"
+			fi
+		done
+	fi
+}
+
+function array-contains() {
+	# TODO: at|in
+	local KEYWORD="${1:?error: missing keyword}"
+	local ARRAY=("${@:2}")
+	[[ ${ARRAY[*]} =~ (^|[$IFS])$KEYWORD($|[$IFS]) ]]
+}
+
+function array-prepend-prefix() {
+	# TODO: at|in
+	local KEYWORD="${1:?error: missing keyword}"
+	local ARRAY=("${@:2}")
+
+	local ENTRY
+	for ENTRY in ${ARRAY[@]:+"${ARRAY[@]}"}; do
+		echo -n "$KEYWORD" "$ENTRY"
+	done
+}

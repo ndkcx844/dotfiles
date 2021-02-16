@@ -1,0 +1,16 @@
+# -*-Shell-script-*-
+#
+# This file is not a stand-alone shell script.
+# This provides environment about display that source it.
+
+# User specific environment and startup programs
+
+# path
+path-export ~/scripts ~/.local/bin
+
+# editor
+export EDITOR="emacs -nw"
+export PAGER="less"
+
+# for debugging (-x/-o xtrace)
+export PS4='+(${BASH_SOURCE}:${LINENO}): ${FUNCNAME:+$FUNCNAME(): }'

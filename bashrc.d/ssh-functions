@@ -1,0 +1,725 @@
+# -*-Shell-script-*-
+#
+# This file is not a stand-alone shell script.
+# This provides functions to ssh that source it.
+
+# global variables
+[ -r "$HOME"/.sshconfig ] && . "$HOME"/.sshconfig
+[ -n "${SSH_REVERSE_TUNNEL_USER:-}" ] || SSH_REVERSE_TUNNEL_USER=$USER
+[ -n "${SSH_REVERSE_TUNNEL_PORT:-}" ] || SSH_REVERSE_TUNNEL_PORT=55022
+
+function ssh() {
+	local ROOT=no
+	local LOGIN=""
+	local BASHRC=""
+	local HOST=""
+	local SSHOPTS=()
+	local TTY=0
+	while [ $# != 0 ]; do
+		case "$1" in
+			-[bcDEeFIiJLlmOopQRSWw])
+				SSHOPTS+=("$1" "$2")
+				shift
+				;;
+			-[bcDEeFIiJLlmOopQRSWw]*)
+				SSHOPTS+=("$1")
+				;;
+			-[1246AaCfGgKkMNnqsTtVvXxYy]*)
+				SSHOPTS+=("$1")
+				local O
+				for O in $(echo "${1#-}" | fold -s1); do
+					[ "$O" = t ] || continue
+					TTY=$((TTY+1))
+				done
+				;;
+			# custom options
+			--quiet|--silent)
+				SSHOPTS+=(-q)
+				;;
+			--batch)
+				SSHOPTS+=(-q -o "LogLevel=QUIET" -o "BatchMode=yes")
+				;;
+			--bashrc|--bash-init-file)
+				BASHRC="$2"
+				shift
+				;;
+			--bashrc=*|--bash-init-file=*)
+				BASHRC="${1#*=}"
+				;;
+			--root)
+				ROOT=yes
+				;;
+			--login)
+				LOGIN=yes
+				;;
+			--)
+				shift
+				break
+				;;
+			*)
+				if [ -n "${HOST:-}" ]; then
+					break
+				fi
+				HOST="$1"
+				;;
+		esac
+		shift
+	done
+	if [ $# = 0 ]; then
+		if [ -n "${BASHRC:-}" ]; then
+			set -- exec bash --rcfile "$BASHRC"
+		else
+			: # set -- exec bash じゃだめか
+		fi
+	fi
+
+	# XXX: CentOS5 の ssh は ControlPersist オプションに対応していないが、
+	#      co51 が ~/ を bind-mount するので、~/.ssh/config がホストと共通
+	# * opt1. ホストの /etc/ssh/ssh_config にだけ ControlPersist を設定
+	#   opt2. 対応バージョンの場合はコマンドライン引数で -o ControlPersist=yes
+	#   opt3. 対応バージョンの場合はコマンドライン引数で -F ~/.ssh/config.host
+
+	if [ "${ROOT:-}" = yes ]; then
+		if [ $# == 0 ]; then
+			# XXX: failsafe: 'su' コマンドは tty 必須
+			# NOTE: '-t' オプションはコマンドの出力に影響がある
+			#       - 改行コードが CRLF になる
+			#       - tty の制御コードが発生する
+			while (( TTY++ < 2 )); do SSHOPTS+=(-t); done
+			if [ "${LOGIN:-}" = yes ]; then
+				set -- su -
+			else
+				set -- su
+			fi
+		else
+			if [ "${LOGIN:-}" = yes ]; then
+				set -- "su - -c '$*'"
+			else
+				set -- "su -c '$*'"
+			fi
+		fi
+	fi
+
+	if [ -z "${HOST:-}" ] && executable ssh-find-host; then
+		HOST="$(ssh-find-host)"
+	fi
+
+	if [ $# = 0 ]; then
+		command ssh ${SSHOPTS[@]:+"${SSHOPTS[@]}"} ${HOST:+"$HOST"}
+	else
+		# TODO: cocot -p EUCJP -t UTF8 -- ssh "${SSHOPTS[@]}" "$HOST" -- "$@"
+		command ssh ${SSHOPTS[@]:+"${SSHOPTS[@]}"} ${HOST:+"$HOST"} -- "$@"
+	fi
+}
+
+# Usage: $FUNCNAME [OPTION]... CMDS
+# i.e. ssh-wrap-cmdline 'for file in *; do echo $file; done'
+function ssh-wrap-cmdline() {
+	local SUDO=no
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			--su|--sudo)
+				SUDO=root
+				;;
+			--su=*|--sudo=*)
+				SUDO="${ARG#*=}"
+				;;
+			--)
+				shift
+				break
+				;;
+			*)
+				break
+			;;
+		esac
+		shift
+	done
+
+	local CMDLINE=""
+	if [ $# = 0 ]; then
+		if [ ! -p /dev/stdin ] && [ ! -s /dev/stdin ]; then
+			error "input not found"
+			return 255
+		fi
+		IFS= read -r CMDLINE < /dev/stdin
+	elif [ $# = 1 ]; then
+		CMDLINE="$*"
+	fi
+
+	if [ -z "${CMDLINE:-}" ]; then
+		local COMMANDS=("$@")
+		local ESCAPED_BACKSLASH="\\\\\\\\"
+		COMMANDS=("${COMMANDS[@]//\\/$ESCAPED_BACKSLASH}")
+		COMMANDS=("${COMMANDS[@]// /\\ }")
+		CMDLINE="${COMMANDS[*]}"
+	else
+		local ESCAPED_BACKSLASH="\\\\\\\\"
+		CMDLINE="${CMDLINE//\\/$ESCAPED_BACKSLASH}"
+	fi
+	local ESCAPED_SQUOTE="'\''"
+	CMDLINE="${CMDLINE//\'/$ESCAPED_SQUOTE}"
+	local ESCAPED_DQUOTE="\\\""
+	CMDLINE="${CMDLINE//\"/$ESCAPED_DQUOTE}"
+	local ESCAPED_DOLLER="\\$"
+	CMDLINE="${CMDLINE//$/$ESCAPED_DOLLER}"
+
+	if [ "${SUDO:-}" = no ]; then
+		echo-with-cbcopy "\"bash -c '$CMDLINE'\""
+	else
+		echo-with-cbcopy "\"su $SUDO -c '$CMDLINE'\""
+	fi
+}
+
+if [ -n "${PS1:-}" ] && include /usr/share/bash-completion/completions/ssh && ! executable -f _ssh_org; then
+	function-copy _ssh _ssh_org
+fi
+function _ssh() {
+	local cur words
+	_init_completion -n : || return
+
+	local word host cmd
+	for word in "${words[@]:1}"; do
+		[[ "$word" == ""  ]] && continue
+		[[ "$word" == *=* ]] && continue # e.g. LANG=C
+
+		if [[ ! $host ]]; then
+			ssh-is-known-host "$word" || continue
+			host="$word"
+		elif [[ ! $cmd ]]; then
+			[[ "$word" =~ ^[a-z] ]] || continue
+			cmd="$word"
+			break
+		fi
+	done
+
+	case "$host" in
+		"$cur"|"")
+			# XXX: host がアドレスだと、 _ssh_org() によりホストが再提示される
+			_ssh_org "$@"
+			if [[ "$cur" == -* ]]; then
+				local extopts=(--quiet --silent --login --bashrc --root --batch)
+				readarray -t -O "${#COMPREPLY[@]}" COMPREPLY < <(compgen -W "${extopts[*]}" -- "$cur")
+			fi
+			return
+			;;
+		*)
+			if executable nmap; then
+				local addr port
+				read -r addr port < <(command ssh -G "$host" <(echo) 2>&1 | command awk '$1 == "hostname" {addr=$2} $1 == "port" {port=$2} addr && port {exit} END{print addr,port}' IGNORECASE=1)
+				if [[ ! $addr ]] || [[ ! $port ]] || ! sudo LANG=C nmap -sT -p "$port" "$addr" 2>/dev/null | command grep -Fwq "$port/tcp open"; then
+					# XXX: host がアドレスだと、 _ssh_org() によりホストが再提示される
+					_ssh_org "$@"
+					return
+				fi
+			fi
+			local sshopts=(-o "StrictHostKeyChecking=no" -o "ConnectTimeout=1" -o "ConnectionAttempts=1" --batch)
+			case "$cmd" in
+				"$cur"|"")
+					readarray -t COMPREPLY < <(ssh "${sshopts[@]}" "$host" compgen -ac -- "$cur")
+					;;
+				*)
+					readarray -t COMPREPLY < <(ssh "${sshopts[@]}" "$host" compgen -fd -- "$cur")
+					compopt -o nospace
+					;;
+			esac
+			;;
+	esac
+}
+# NOTE: fzf と干渉...
+complete -F _ssh ssh
+
+function scp() {
+	local ARGS=()
+	local DSTS=()
+	local SCPOPTS=()
+	local VIALOCAL=no
+	local DST
+	while [ $# != 0 ]; do
+		case "$1" in
+			-[cFiloPS])
+				SCPOPTS+=("$1" "$2")
+				shift
+				;;
+			-[cFiloPS]*)
+				SCPOPTS+=("$1")
+				;;
+			-[1246BCpqrv]*)
+				SCPOPTS+=("$1")
+				;;
+			-3)
+				VIALOCAL=yes
+				ARGS+=("$1")
+				;;
+			# custom options
+			--)
+				DSTS=("${@:2}")
+				break
+				;;
+			*)
+				ARGS+=("$1")
+				;;
+		esac
+		shift
+	done
+	if (( ${#ARGS[@]} + ${#DSTS[@]} < 2 )); then
+		command scp "${SCPOPTS[@]}"
+		command cat <<-EOF
+
+		Usage(advanced):
+		scp [OPTION]... SRC... -- DST...
+		scp [OPTION]... SRC... DST1: DST2:
+		scp [OPTION]... SRC... DST1:/DST1/ DST2:/DST2/
+		EOF
+		return
+	fi
+
+	# 複数DST時の分離
+	if (( 2 < ${#ARGS[@]} )) && [ ${#DSTS[@]} = 0 ] && [ "$VIALOCAL" = no ]; then
+		local I
+		for ((I = ${#ARGS[@]}; 0 < I; I--)); do
+			DST="${ARGS[I-1]}"
+			[[ "$DST" == *:* ]] || break
+			ssh-is-valid-host "${DST%:*}" || break
+		done
+		if [ "$I" != 0 ] && [ "$I" != ${#ARGS[@]} ]; then
+			DSTS=("${ARGS[@]:I}")
+			ARGS=("${ARGS[@]:0:I}")
+		fi
+	fi
+
+	# 拡張1. 複数宛先ホストへのアップロード
+	if [ "${#DSTS[@]}" != 0 ]; then
+		for DST in "${DSTS[@]}"; do
+			command scp "${SCPOPTS[@]}" "${ARGS[@]}" "$DST"
+		done
+		return
+	fi
+
+	# 拡張2. 宛先がホスト名の場合は末尾に ":" を自動補完(アップロード時限定)
+	DST="${ARGS[*]:${#ARGS[@]}-1:1}"
+	if [[ "$DST" =~ ^[^/:]+$ ]] && ssh-is-known-host "$DST"; then
+		ARGS=("${ARGS[@]:0:${#ARGS[@]}-1}" "$DST:")
+	fi
+
+	command scp "${SCPOPTS[@]}" "${ARGS[@]}"
+}
+# NOTE: fzf と干渉するので戻す
+complete -o nospace -F _scp scp
+
+# Usage: $FUNCNAME HOST
+function ssh-is-known-host() {
+	local HOSTNAME="${1:?error: Usage: ${FUNCNAME[0]} HOST}"
+
+	command ssh -G "$HOSTNAME" <(echo) 2>&1 | \
+		command awk '$1 == "hostname" {found = match($2, /^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$/); exit}; END{exit found? 0 : 255}' IGNORECASE=1
+}
+
+# Usage: $FUNCNAME HOST
+function ssh-is-valid-host() {
+	local HOST="${1:?error: missing HOST}"
+
+	command ipcalc --silent --check "$HOST" && return 0
+	ssh-is-known-host "$HOST" && return 0
+
+	return 255
+}
+
+function ssh-add-key() {
+	if command ssh-add -l &>/dev/null; then
+		return 0
+	fi
+	command ssh-add
+}
+
+function ssh-delete-known-hosts() {
+	local TARGET="${1:-}"
+	if [ -z "${TARGET:-}" ]; then
+		echo "Usage: ${FUNCNAME[0]} TARGET" >&2
+		return 255
+	fi
+	TARGET="${TARGET//\[/\\[}"
+	TARGET="${TARGET//\]/\\]}"
+	command sed -i "/^$TARGET\s/d" ~/.ssh/known_hosts
+}
+
+function ssh-agent-start() {
+	local LASTLOG=~/.ssh/.agent.lastlog
+	# 履歴が有効なら使う
+	if [ -z "${SSH_AUTH_SOCK:-}" ] && [ -f "$LASTLOG" ]; then
+		. "$LASTLOG" > /dev/null
+	fi
+	# 不正な履歴の場合は削除する
+	# ssh-agent が起動済みの場合は鍵だけ追加
+	if [ -r "${SSH_AUTH_SOCK:-}" ]; then
+		if [ -n "${SSH_CONNECTION:-}" ]; then
+			return
+		fi
+		if kill -0 "${SSH_AGENT_PID:--}" &>/dev/null; then
+			ssh-add-key
+			return
+		fi
+	fi
+
+	command ssh-agent > "$LASTLOG"
+	. "$LASTLOG" > /dev/null
+	ssh-add-key
+}
+function ssh-agent-setup() {
+	if [ -S "${SSH_AUTH_SOCK:-}" ]; then
+		# case1. エージェントフォワーディングが設定されている
+		return
+	fi
+
+	local AGENTSTAT=~/.ssh/agent.stat
+	if [ -r "$AGENTSTAT" ]; then
+		include "$AGENTSTAT"
+		if [ -S "${SSH_AUTH_SOCK:-}" ]; then
+			# case2. ssh-agentが起動している
+			return
+		fi
+		if [ -n "${SSH_AGENT_PID:-}" ] && ps -o comm --no-header -p "$SSH_AGENT_PID" | command grep -Fq ssh; then
+			kill "$SSH_AGENT_PID" &>/dev/null
+		fi
+	fi
+	local RET=0
+	eval "$(command ssh-agent | tee "$AGENTSTAT")" || {
+		RET=$?
+		return $RET
+	}
+	ssh-add-key || {
+		RET=$?
+		# 無効な状態はクリアする
+		kill "$SSH_AGENT_PID" &>/dev/null
+		export -n SSH_AGENT_PID
+		export -n SSH_AUTH_SOCK
+		unset SSH_AGENT_PID
+		unset SSH_AUTH_SOCK
+		command rm -f "$AGENTSTAT"
+		return $RET
+	}
+}
+ssh-agent-setup
+
+if executable fzf; then
+	function ssh-find-host() {
+		ssh-known-hosts | command sort | FZF_DEFAULT_OPTS="$FZF_ONESHOT_OPTS --no-multi" fzf --preview=""
+	}
+
+	function fzf-ssh() {
+		local HOST
+		HOST="$(ssh-find-host)"
+		[ -n "$HOST" ] || return 0
+
+		ssh "$@" "$HOST"
+	}
+	alias fssh='fzf-ssh'
+fi
+
+function ssh-host2hostname() {
+	local HOST="${1:?error: Usage: ${FUNCNAME[0]} HOST}"
+	command ssh -G "$HOST" <(echo) 2>&1 | command awk '$1 == "hostname" {print $2; exit}' IGNORECASE=1
+}
+
+function ssh-known-hosts() {
+	{
+		command awk '
+		$1 ~ /^(Host|HostName|Match)$/ {
+			for (i = 2; i <= NF; i++) {
+				if ($i !~ "[*?]")
+					print $i
+		}
+		}' IGNORECASE=1 ~/.ssh/config /etc/ssh/ssh_config
+		command sed -rn 's/^\[(.*)\]:[0-9]+ .*/\1/p' ~/.ssh/known_hosts
+	} | command sort --uniq
+}
+
+function ssh-setup-terminal-environment() {
+	local HOSTS=()
+	local SSH_USER
+	local SSH_PORT
+	local RCFILE=~/.bashrc
+	local XEMACS
+	local RPMDIR
+	local RPMS=()
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-l|--ssh-user)
+				SSH_USER="$2"
+				shift
+				;;
+			--ssh-user=*)
+				SSH_USER="${ARG#*=}"
+				;;
+			-p|--ssh-port)
+				SSH_PORT="$2"
+				shift
+				;;
+			--ssh-port=*)
+				SSH_PORT="${ARG#*=}"
+				;;
+			--rcfile|--init-file)
+				RCFILE="$2"
+				shift
+				;;
+			--rcfile=*|--init-file=*)
+				RCFILE="${ARG#*=}"
+				;;
+			--xemacs)
+				eval XEMACS="$2"
+				shift
+				;;
+			--xemacs=*)
+				eval XEMACS="${ARG#*=}"
+				;;
+			--rpm)
+				local RPM
+				for RPM in ${2//,/ }; do
+					RPMS+=("$RPM")
+				done
+				shift
+				;;
+			--rpm=*)
+				ARG="${ARG#*=}"
+				local RPM
+				for RPM in ${ARG//,/ }; do
+					RPMS+=("$RPM")
+				done
+				;;
+			--rpmdir)
+				RPMDIR="$2"
+				shift
+				;;
+			--rpmdir=*)
+				RPMDIR="${ARG#*=}"
+				;;
+			*)
+				local HOST="$ARG"
+				if [[ "$HOST" == *@* ]]; then
+					SSH_USER="${HOST%@*}"
+					HOST="${HOST#*@}"
+				fi
+				if [[ "$HOST" == *:* ]]; then
+					SSH_PORT="${HOST#*:}"
+					HOST="${HOST%:*}"
+				fi
+				HOSTS+=("$HOST")
+				;;
+		esac
+		shift
+	done
+
+	function ssh-setup-terminal-environment-each() {
+		local HOST="${1:?error: missing target}"
+
+		# upload ssh key
+		if ! ssh --batch ${SSH_PORT:+-p $SSH_PORT} "${SSH_USER:+$SSH_USER@}$HOST" -- true; then
+			command ssh-copy-id ${SSH_PORT:+-p $SSH_PORT} -i ~/.ssh/id_rsa.pub "${SSH_USER:+$SSH_USER@}$HOST"
+		fi
+
+		# upload command and functions
+		command ssh ${SSH_PORT:+-p $SSH_PORT} "${SSH_USER:+$SSH_USER@}$HOST" -- bash -c "'mkdir -p .bashrc.d'"
+		command ssh ${SSH_PORT:+-p $SSH_PORT} "${SSH_USER:+$SSH_USER@}$HOST" -- bash -c "'mkdir -p .bash_completion.d'"
+		command ssh ${SSH_PORT:+-p $SSH_PORT} "${SSH_USER:+$SSH_USER@}$HOST" -- bash -c "'mkdir -p .local/bin'"
+		local RCNAME="${RCFILE##*/}"
+		command scp ${SSH_PORT:+-P $SSH_PORT} "$RCFILE" "${SSH_USER:+$SSH_USER@}$HOST:.${RCNAME#.}"
+		command scp ${SSH_PORT:+-P $SSH_PORT} ~/.bashrc.d/* "${SSH_USER:+$SSH_USER@}$HOST":.bashrc.d/
+		command scp ${SSH_PORT:+-P $SSH_PORT} ~/.bash_completion "${SSH_USER:+$SSH_USER@}$HOST":
+		command scp ${SSH_PORT:+-P $SSH_PORT} ~/.bash_completion.d/* "${SSH_USER:+$SSH_USER@}$HOST":.bash_completion.d/
+		command scp ${SSH_PORT:+-P $SSH_PORT} ~/.local/bin/* "${SSH_USER:+$SSH_USER@}$HOST":.local/bin/
+		# NOTE: ~/.lessfilter not supported by lesspipe.sh on Cent5
+		command scp ${SSH_PORT:+-P $SSH_PORT} ~/.lessfilter "${SSH_USER:+$SSH_USER@}$HOST":.local/bin/lesspipe.sh
+		command ssh ${SSH_PORT:+-p $SSH_PORT} "${SSH_USER:+$SSH_USER@}$HOST" -- bash -c "'cat > .sshconfig'" <<-EOF
+		SSH_REVERSE_TUNNEL_USER=$USER
+		SSH_REVERSE_TUNNEL_PORT=$SSH_REVERSE_TUNNEL_PORT
+		EOF
+
+		if [ -f "$XEMACS" ]; then
+			local X="${XEMACS##*/}"
+			command scp ${SSH_PORT:+-P $SSH_PORT} "$XEMACS" "${SSH_USER:+$SSH_USER@}$HOST:.${X#.}"
+			command ssh ${SSH_PORT:+-p $SSH_PORT} "${SSH_USER:+$SSH_USER@}$HOST" -- bash -c "'sed -i \"/^;;; XEMACS BEGIN/,/^;;; XEMACS END/d\" .emacs'"
+			command ssh ${SSH_PORT:+-p $SSH_PORT} "${SSH_USER:+$SSH_USER@}$HOST" -- bash -c "'cat >> .emacs'" <<-EOF
+			;;; XEMACS BEGIN
+			(when (getenv "XEMACS")
+			      (load-file (expand-file-name "~/.xemacs")))
+			;;; XEMACS END
+		EOF
+		fi
+
+		local ARCH
+		ARCH="$(command ssh ${SSH_PORT:+-p $SSH_PORT} "${SSH_USER:+$SSH_USER@}$HOST" arch)"
+
+		# install commands
+		case "${ARCH:-}" in
+			i[0-9]86)
+				ARCH=x86
+				command ssh ${SSH_PORT:+-p $SSH_PORT} "${SSH_USER:+$SSH_USER@}$HOST" -- bash -c "'cd ~/.local/bin/; for file in *.i[0-9]86; do ln -fs \$file \${file%.*}; done'"
+				;;
+			x86_64)
+				ARCH=x86_64
+				# NOTE: 32bitだと問題ある場合があったので64bitだけインストール
+				command ssh ${SSH_PORT:+-p $SSH_PORT} "${SSH_USER:+$SSH_USER@}$HOST" -- bash -c "'cd ~/.local/bin/; for file in *.x86_64; do ln -fs \$file \${file%.*}; done'"
+				;;
+			*)
+				error "unexpected arch: $ARCH"
+				return 255
+				;;
+		esac
+
+		# rpms
+		if [ "${#RPMS[@]}" = 0 ]; then
+			RPMS=(
+				epel-release
+				bash-completion
+				nkf
+				ltrace
+				inotify-tools
+				hping3
+				nmap
+				conntrack-tools
+				highlight
+				python-pygments
+				the_silver_searcher
+				expect  # for unbuffer
+				vim-common vim-enhanced
+			)
+		fi
+		local PRECMD
+		if command ssh ${SSH_PORT:+-p $SSH_PORT} "${SSH_USER:+$SSH_USER@}$HOST" -tt -q -- sudo true 2>/dev/null; then
+			# for Cent7
+			PRECMD=sudo
+			command ssh ${SSH_PORT:+-p $SSH_PORT} "${SSH_USER:+$SSH_USER@}$HOST" -tt -q -- "sudo su -c '[ -d /etc/sudoers.d ] && echo \"\$SUDO_USER ALL=(ALL) NOPASSWD: ALL\" > /etc/sudoers.d/\$SUDO_USER'"
+		else
+			# for disabled sudo environment
+			PRECMD="command"
+		fi
+		local RPMNAME RPMFILES=() RPMPKGS=()
+		for RPMNAME in ${RPMS[@]:+"${RPMS[@]}"}; do
+			command ssh ${SSH_PORT:+-p $SSH_PORT} "${SSH_USER:+$SSH_USER@}$HOST" rpm -q "$RPMNAME" 2>/dev/null && continue
+
+			if [ -n "${RPMDIR:-}" ]; then
+				local RPMFILE
+				if [ "${ARCH:-}" = x86 ]; then
+					RPMFILE="$(command find "$RPMDIR" -name "$RPMNAME-*.el5.*.rpm" -or -name "$RPMNAME-*.i?${ARCH#x}.rpm" 2>/dev/null)"
+				else
+					RPMFILE="$(command find "$RPMDIR" -name "$RPMNAME-*.el7.*.rpm" -or -name "$RPMNAME-*.$ARCH.rpm" 2>/dev/null)"
+					if [ -z "${RPMFILE:-}" ]; then
+						# NOTE: Cent7はyumでダウンロード出来るので、そっちをトライ
+						RPMPKGS+=("$RPMNAME")
+						continue
+					fi
+				fi
+				if [ -z "${RPMFILE:-}" ]; then
+					warn "no such file: $RPMNAME"
+					continue
+				fi
+
+				# upload
+				command scp ${SSH_PORT:+-P $SSH_PORT} "$RPMFILE" "${SSH_USER:+$SSH_USER@}$HOST":/tmp/
+
+				RPMFILES+=("/tmp/${RPMFILE##*/}")
+			else
+				RPMPKGS+=("$RPMNAME")
+			fi
+		done
+
+		# install by file
+		if [ ${#RPMFILES[@]} != 0 ]; then
+			local CMDS=("$PRECMD" su -c "'rpm -Uvh --force ${RPMFILES[@]}'")
+			command ssh ${SSH_PORT:+-p $SSH_PORT} "${SSH_USER:+$SSH_USER@}$HOST" -tt -q -- "${CMDS[@]}"
+		fi
+
+		# install by yum
+		if [ ${#RPMPKGS[@]} != 0 ]; then
+			local CMDS=("$PRECMD" su -c "'yum install -y --enablerepo=epel ${RPMPKGS[@]}'")
+			command ssh ${SSH_PORT:+-p $SSH_PORT} "${SSH_USER:+$SSH_USER@}$HOST" -tt -q -- "${CMDS[@]}"
+		fi
+	}
+
+	(
+		set -o errexit
+		set -o errtrace
+		trap caught-error ERR
+
+		local HOST
+		for HOST in "${HOSTS[@]}"; do
+			ssh-setup-terminal-environment-each "$HOST" || break
+		done
+	)
+}
+complete -F _known_hosts ssh-setup-terminal-environment
+
+function ssh-copy-id() {
+	local CMDARGS=()
+	local IDENTITY=""
+	local USERNAME=""
+	local HOSTNAME=""
+	local BUILTIN=""
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-n|-f)
+				BUILTIN="${BUILTIN:+$BUILTIN }$ARG"
+				CMDARGS+=("$ARG")
+				;;
+			-p|-o)
+				CMDARGS+=("$ARG" "$2")
+				shift
+				;;
+			# custom options
+			-l)
+				USERNAME="$2"
+				shift
+				;;
+			-l*)
+				USERNAME="${ARG:2}"
+				;;
+			-p*|-o*)
+				CMDARGS+=("${ARG:0:2}" "${ARG:2}")
+				;;
+			-i)
+				IDENTITY="$2"
+				shift
+				;;
+			-h|-?)
+			cat <<-EOF
+			Usage: /usr/bin/ssh-copy-id [-h|-?|-f|-n] [-i [identity_file]] [-p port] [-l user] [[-o <ssh -o options>] ...] [user@]hostname
+			-f: force mode -- copy keys without trying to check if they are already installed
+			-n: dry run    -- no keys are actually copied
+			EOF
+			return 0
+			;;
+			*)
+				HOSTNAME="$ARG"
+				;;
+		esac
+		shift
+	done
+	# complete user name by -l option
+	if [ -n "${USERNAME:-}" ] && [ -n "${HOSTNAME:-}" ]; then
+		HOSTNAME="$USERNAME"@"$HOSTNAME"
+	fi
+
+	if [ -n "${IDENTITY:-}" ]; then
+		local ID
+		if [ -z "${BUILTIN:-}" ] && [ ! -f "${IDENTITY:-}" ] && [ -r "${SSH_AUTH_SOCK:-}" ]; then
+			ID="$(command ssh-add -L | command awk -v key="$IDENTITY" '$3 == key')"
+		fi
+		if [ -n "${ID:-}" ]; then
+			IDENTITY="$ID"
+		else
+			CMDARGS+=("-i" "$IDENTITY")
+			IDENTITY=""
+		fi
+	fi
+
+	if [ -n "${IDENTITY:-}" ]; then
+		command ssh -q ${CMDARGS[@]:+"${CMDARGS[@]}"} ${HOSTNAME:+"$HOSTNAME"} -- "exec sh -c 'cd ; umask 077 ; mkdir -p .ssh && { [ -z \"\$(tail -1c .ssh/authorized_keys 2>/dev/null)\" ] || echo >> .ssh/authorized_keys || exit 1; } && cat >> .ssh/authorized_keys || exit 1'" <<-EOF
+		$IDENTITY
+		EOF
+	else
+		command "${FUNCNAME[0]}" ${CMDARGS[@]:+"${CMDARGS[@]}"} ${HOSTNAME:+"$HOSTNAME"}
+	fi
+}
+complete -F _known_hosts ssh-copy-id

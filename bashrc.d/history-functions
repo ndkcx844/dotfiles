@@ -1,0 +1,289 @@
+# -*-Shell-script-*-
+#
+# This file is not a stand-alone shell script.
+# This provides functions to bash-history that source it.
+
+[ -z "${PS1:-}" ] && return
+
+# Customize history
+unset HISTSIZE          2>/dev/null && HISTSIZE=1000000
+unset HISTTIMEFORMAT    2>/dev/null && HISTTIMEFORMAT='%y/%m/%d %H:%M:%S  '
+unset HISTCONTROL       2>/dev/null && HISTCONTROL=ignoredups
+unset HISTIGNORE        2>/dev/null && HISTIGNORE=ls:fg:bg:
+set +o histexpand # debug-hookで手動で即時追加するので無効化
+__trap_debug_hook() {
+	command history -a
+}
+trap '__trap_debug_hook' DEBUG
+
+if executable history-reload; then
+	# 2回目以降のロード時は履歴もリロード
+	history-reload
+fi
+
+if executable fasd && executable fzf; then
+	# NOTE: 不要なエイリアス(z, f, a, s) の設定を抑止するために引数を bash-hook 指定で初期化
+	eval "$(command fasd --init bash-hook)"
+
+	function fasd() {
+		local ARGS=()
+		while [ $# != 0 ]; do
+			case "$1" in
+				--all)
+					ARGS+=(-a)
+					;;
+				--dir|--directory)
+					ARGS+=(-d)
+					;;
+				--file)
+					ARGS+=(-f)
+					;;
+				*)
+					ARGS+=("$1")
+					;;
+			esac
+			shift
+		done
+
+		command fasd "${ARGS[@]}"
+	}
+
+	function history-file() {
+		local FILES=()
+		readarray -t FILES < <(mru -f "$@")
+		[ "${#FILES[@]}" = 0 ] && return 0
+
+		local CMDS=()
+		read -r -a CMDS <<< "${EDITOR:-vi}"
+		command history -s "${CMDS[@]}" "${FILES[@]}"
+		"${CMDS[@]}" "${FILES[@]}"
+	}
+	alias fh='history-file'
+	alias hf='history-file'
+
+	function history-directory() {
+		local DIR
+		DIR="$(mru -d "$@")"
+		[ -n "${DIR}" ] || return 0
+
+		command history -s cd "$DIR"
+		cd "$DIR" || return
+	}
+	alias z='history-directory'
+	alias dh='history-directory'
+	alias hd='history-directory'
+	alias hcd='history-directory'
+	alias cdh='history-directory'
+
+	function mru() {
+		local ACTION
+		local TYPE=all
+		local FZF_OPTS=("--delimiter" "/" "--tac" "--expect=ctrl-r,ctrl-t,ctrl-d,ctrl-y,ctrl-s")
+		while [ $# != 0 ]; do
+			case "$1" in
+				--action)
+					ACTION="$2"
+					shift
+					;;
+				--action=*)
+					ACTION="${1#*=}"
+					;;
+				-d|--dir|--directory)
+					TYPE=directory
+					;;
+				-f|--file)
+					TYPE="file"
+					;;
+				--multi|--exit-0|--select-1)
+					FZF_OPTS+=("$1")
+					;;
+				--)
+					shift
+					break
+					;;
+				-*)
+					echo "unsupported option: $1" >&2
+					return 255
+					;;
+				*)
+					break
+					;;
+			esac
+			shift
+		done
+
+		local FZF_RESULT INFO QUERY="$*" KEY ENTRIES=() FZF_SCOPE=-1
+		local HEADER="($TYPE${FZF_SCOPE:++last})"
+		while FZF_RESULT="$(fasd --${TYPE:-all} | sed -r 's/^[0-9.]+\s+//' | command awk '!a[$0]++' | file-colorize-name | FZF_DEFAULT_OPTS="$FZF_REPEATS_OPTS" fzf "${FZF_OPTS[@]}" --nth=${FZF_SCOPE:-..} --header="$HEADER" --query="$QUERY")"; do
+			mapfile -t INFO <<< "$FZF_RESULT"
+			QUERY="${INFO[0]}"
+			KEY="${INFO[1]}"
+			readarray -t ENTRIES < <(bash-escape "${INFO[@]:2}")
+			case "$KEY" in
+				ctrl-t)
+					TYPE="$(fzf-rotate-filetype "$TYPE")"
+					HEADER="($TYPE${FZF_SCOPE:++last})"
+					continue
+					;;
+				ctrl-r)
+					[ -z "$FZF_SCOPE" ] && FZF_SCOPE=-1 || FZF_SCOPE=""
+					HEADER="($TYPE${FZF_SCOPE:++last})"
+					continue
+					;;
+			esac
+			[ ${#ENTRIES[@]} = 0 ] && break
+
+			case "$KEY" in
+				# TODO: C-z したくなったら --expect して、mru の結果をファイルに落とす
+				ctrl-d)
+					if [ ${#ENTRIES[@]} = 1 ] && [ -d "${ENTRIES[0]}" ]; then
+						history -s cd "${ENTRIES[@]}"
+						cd "${ENTRIES[@]}" || return
+						break
+					fi
+					;;
+				ctrl-y)
+					cbcopy "${ENTRIES[@]}"
+					break
+					;;
+				ctrl-s)
+					command cat "${ENTRIES[@]}" > /dev/tty
+					break
+					;;
+				*)
+					if [ -n "${ACTION:-}" ]; then
+						history -s "$ACTION" "${ENTRIES[@]}"
+						eval "$ACTION" "${ENTRIES[@]}"
+					else
+						echo "${ENTRIES[@]}"
+					fi
+					break
+					;;
+			esac
+		done
+	}
+	alias mur='mru'
+	[ -n "${PS1:-}" ] && executable fzf && bind -x '"\C-x\C-f":mru'
+fi
+
+function history-append() {
+	local ECHO=no
+	local PRECMD=""
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			--echo)
+				ECHO=yes
+				;;
+			--eval)
+				PRECMD="eval"
+				;;
+			*)
+				break
+				;;
+		esac
+		shift
+	done
+
+	if [ "$ECHO" = yes ]; then
+		echo "$@"
+	fi
+	${PRECMD:+"$PRECMD"} command history -s "$@"
+}
+
+function history-reload() {
+	# set -o history
+	command history -n
+}
+
+function history-show() {
+	local OPTS=()
+	local PAGER="${PAGER:-less}"
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			# custom options
+			--pager)
+				PAGER="$2"
+				shift
+				;;
+			--pager=*)
+				PAGER="${ARG#*=}"
+				;;
+			--no-pager)
+				PAGER=""
+				;;
+			*)
+				OPTS+=("$ARG")
+				;;
+		esac
+		shift
+	done
+	if ! stdout-is-tty; then
+		PAGER=""
+	fi
+
+	if [ -n "${PAGER:-}" ]; then
+		command history ${OPTS[@]:+"${OPTS[@]}"} | command "$PAGER"
+	else
+		command history ${OPTS[@]:+"${OPTS[@]}"}
+	fi
+	return "${PIPESTATUS[0]}"
+}
+
+# Usage: $FUNCNAME [ACTION] [OPTION]... [COMMAND]...
+function history() {
+	local ARGS=()
+	local CMD=show
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-c)
+				ARGS+=("$ARG")
+				CMD=builtin
+				;;
+			-d)
+				ARGS+=("$ARG" "$2")
+				shift
+				CMD=builtin
+				;;
+			-[anrw])
+				ARGS+=("$ARG")
+				if (($# > 1)); then
+					ARGS+=("$2")
+					shift
+				fi
+				CMD=builtin
+				;;
+			-p)
+				ARGS+=("$@")
+				CMD=builtin
+				break
+				;;
+			-s)
+				ARGS+=("$@")
+				CMD=append
+				break
+				;;
+			[1-9]*)
+				ARGS+=("$ARG")
+				;;
+			--help)
+				ARGS+=("$ARG")
+				CMD=builtin
+				;;
+			*)
+				ARGS+=("${@:2}")
+				CMD="$ARG"
+				break
+				;;
+		esac
+		shift
+	done
+
+	if executable history-"$CMD"; then
+		history-"$CMD" ${ARGS[@]:+"${ARGS[@]}"}
+	else
+		command "${FUNCNAME[0]}" ${ARGS[@]:+"${ARGS[@]}"}
+	fi
+}

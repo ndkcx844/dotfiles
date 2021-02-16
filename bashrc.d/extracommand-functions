@@ -1,0 +1,1643 @@
+# -*-Shell-script-*-
+#
+# This file is not a stand-alone shell script.
+# This provides functions to bash that source it.
+
+function datefmt() {
+	local FMTS=(
+		"%Y-%m-%d %H:%m:%S.%N"
+		"%Y-%m-%d %H:%m:%S"
+		"%Y-%m-%d %H:%m:%S"
+	)
+	local FMT
+	for FMT in ${FMTS[@]:+"${FMTS[@]}"}; do
+		echo date +"'$FMT'"
+		date +"$FMT"
+		echo
+	done
+	if stdout-is-tty; then
+		echo -en '\e[1F' >&2
+		echo -en '\e[2K' >&2
+	fi
+}
+
+function datesync() {
+	sudo ntpdate "$(command grep -v -e ^127. -e ^# -e ^$ /etc/ntp/step-tickers)"
+}
+alias dateupdate='datesync'
+
+# Usage: $FUNCNAME [OPTION]... [DAY]
+function worktime() {
+	local HISTORY=~/.bash_history
+	if [ ! -f "$HISTORY" ]; then
+		error "no such file: $HISTORY"
+		return 255
+	fi
+
+	local FILTEROPT WITH_CMD=yes
+	local DAYS=()
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$1" in
+			-x|--debug)
+				trap 'trap - RETURN INT; set +o xtrace' RETURN INT
+				set -o xtrace
+				;;
+			-h|--help|--usage)
+				command cat <<-EOF
+				Usage: ${FUNCNAME[0]} [OPTION...] [DAYS]
+
+				OPTION
+				  -n, --no-command
+				  -t, --today
+				  -a, --all
+
+				DAY
+				  D[,D...]
+				  YYYY-MM-DD
+				  D..D
+				  D..
+				  ..D
+				  D-
+				  D-D
+				EOF
+				;;
+			-n|--no-command|--without-command|--only-date)
+				WITH_CMD=no
+				;;
+			-a|--all)
+				FILTEROPT=--all
+				;;
+			-t|--today)
+				DAYS+=(today)
+				;;
+			20[0-9][0-9]-[0-9][0-9]-[0-9][0-9])
+				DAYS+=("$1")
+				;;
+			[0-9]*,[0-9]*)
+				local ARGS
+				read -r -a ARGS <<< "${1//,/ }"
+				set -- "${ARGS[@]}" "${@:2}"
+				continue
+				;;
+			[0-9]*-|[0-9]*-[0-9]*)
+				set -- "${1/-/..}" "${@:2}"
+				continue
+				;;
+			[0-9]*..[0-9]*)
+				local _DAYS=()
+				read -r -a _DAYS < <(eval echo "{${1}}")
+				DAYS+=(${_DAYS[@]:+"${_DAYS[@]}"})
+				;;
+			[0-9]*..)
+				local _DAYS=()
+				read -r -a _DAYS < <(eval echo "{${1}$(command date +%d -d "yesterday")}")
+				DAYS+=(${_DAYS[@]:+"${_DAYS[@]}"})
+				;;
+			..[0-9]*)
+				read -r -a DAYS < <(echo ${DAYS[@]:+"${DAYS[@]}"}; eval echo "{$(command date +%d -d "yesterday")""${1}}")
+				;;
+			*)
+				DAYS+=("$1")
+				;;
+		esac
+		shift
+	done
+	if [ ${#DAYS[@]} = 0 ]; then
+		read -r -a DAYS < <(printf -- "%s" "$(eval echo -{1..10})")
+	fi
+
+	function worktime-filter() {
+		if [ "${1:-}" = --all ]; then
+			less
+		else
+			command sed -n -e '1p' -e '$p'
+		fi
+	}
+
+	local DAY
+	for DAY in "${DAYS[@]}"; do
+		if [[ $DAY =~ ^\+?[0]?([1-9]|[1-9][0-9])$ ]]; then
+			if (( "$(command date +%d --date today)" < "${BASH_REMATCH[1]}" )); then
+				DAY="$(command date +"%Y/%m" --date "last month")/$DAY"
+			else
+				DAY="$(command date +"%Y/%m")/$DAY"
+			fi
+		elif [[ $DAY =~ ^-[0-9]+$ ]]; then
+			DAY="${DAY#-} days ago"
+		fi
+		DAY="$(command date +%F --date "$DAY")"
+		if [ -z "${DAY:-}" ]; then
+			echo "error: could not get target date" >&2
+			return 255
+		fi
+		DAY="$(command date +%s --date "$DAY")"
+
+		command awk -v day="$DAY" -v with_cmd="${WITH_CMD:-no}" '
+		BEGIN {
+			from  = day
+			until = from + (24 * 60 * 60)
+		}
+		/^#[0-9]{10}/ {
+			epoc = substr($1, 2)
+			if (epoc < from || until < epoc)
+				next
+			printf "%s", strftime("%F %T", epoc)
+			if (with_cmd == "yes")
+				show_cmd = 1
+			else
+				printf "\n"
+			next
+		}
+		show_cmd {
+			show_cmd = 0
+			print "", $0
+		}
+		' $HISTORY | \
+			sort | \
+			worktime-filter "${FILTEROPT:+$FILTEROPT}"
+	done
+	unset -f worktime-filter
+}
+alias attendance='worktime'
+function _worktime() {
+	local cur
+	_init_completion || return
+
+	local opts=(-x --debug -n --no-command --without-command --only-date -a --all -t --today)
+	readarray -t COMPREPLY < <(compgen -W "${opts[*]}" -- "$cur")
+}
+complete -F _worktime worktime attendance
+
+function mac-vender() {
+	local MAC="${1:?error: missing MAC operand}"
+
+	local KEY
+	if [[ "$MAC" =~ ^([0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]) ]]; then
+		KEY="${BASH_REMATCH[1]//:/-}"
+	elif [[ "$MAC" =~ ^([0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F]) ]]; then
+		KEY="${BASH_REMATCH[1]}"
+	elif [[ "$MAC" =~ ^([0-9a-fA-F]{12}) ]]; then
+		for ((i = 0; i < 6; i += 2)); do
+			KEY+="${1:$i:2}-"
+		done
+		KEY="${KEY%-}"
+	fi
+	local OUIFILE=/usr/share/hwdata/oui.txt
+	if [ ! -f "$OUIFILE" ]; then
+		command curl http://standards-oui.ieee.org/oui.txt -o "$OUIFILE"
+	fi
+
+	command grep -i "^$KEY" "$OUIFILE"
+}
+
+# Usage: $FUNCNAME [OPTION]... FIELD[,FIELD]... [FILE]...
+#        FIELD are:
+#          N     N'th field, counted from first field
+#          N-    from N'th field, to last field
+#          N..   from N'th field, to last field
+#          N-M   from N'th to M'th (included) field
+#          N..M  from N'th to M'th (included) field
+#          N-    from N'th field, to last field
+#          ..M   from 1st field, to M'th field
+#          -N    The N'th field to last field
+#          ..-N  from 1st field to N'th to last field
+#          ..    All the fields
+function col() {
+	local INPUT_DELIMITER="${IFS:0:1}"
+	local OUTPUT_DELIMITER
+	local FIELDS=()
+	local ARGS=()
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$1" in
+			-F|-d|--field-separator|--delimiter)
+				INPUT_DELIMITER="$2"
+				shift
+				;;
+			-F*|-d*)
+				INPUT_DELIMITER="${1:2}"
+				;;
+			--field-separator=*|--delimiter=*)
+				INPUT_DELIMITER="${1#*=}"
+				;;
+			-f|--fields)
+				FIELDS+=("$2")
+				shift
+				;;
+			-f*)
+				FIELDS+=("${1:2}")
+				;;
+			--fields=*)
+				FIELDS+=("${1#*=}")
+				;;
+			--output-delimiter)
+				OUTPUT_DELIMITER="$2"
+				shift
+				;;
+			--output-delimiter=*)
+				OUTPUT_DELIMITER="${1#*=}"
+				;;
+			-o|--oneline)
+				# TODO
+				;;
+			-|/dev/stdin)
+				FILE+=("-")
+				;;
+			*)
+				ARGS+=("$1")
+		esac
+		shift
+	done
+	if [ ${#FIELDS[@]} = 0 ] && [ ${#ARGS[@]} = 0 ]; then
+		error "missing column number"
+		return 255
+	fi
+
+	local FILES=()
+	if [ ${#FIELDS[@]} = 0 ]; then
+		# case: col FIELD FILES
+		FIELDS+=(${ARGS[@]:+"${ARGS[0]}"})
+		FILES=(${ARGS[@]:+"${ARGS[@]:1}"})
+	else
+		# case: col FILES -f FIELD
+		FILES=(${ARGS[@]:+"${ARGS[@]}"})
+	fi
+	# adapt and check format of fields
+	local _FIELD _FIELDS=()
+	for _FIELD in ${FIELDS[*]//,/ }; do
+		# NOTE: extglobだとshellcheckとemacsが動かないため正規表現を使う
+		# fzf(1) style
+		if [[ $_FIELD =~ ^(-?[0-9]+)\.\.(-?[0-9]+)$ ]]; then # N..M
+			_FIELDS+=("$_FIELD")
+		elif [[ $_FIELD =~ ^\.\.(-?[0-9+])$ ]]; then # ..M
+			_FIELDS+=(1.."${_FIELD#..}")
+		elif [[ $_FIELD =~ ^(-?[0-9]+)\.\.$ ]]; then # N..
+			_FIELDS+=("${_FIELD%..}"..-1)
+		elif [[ $_FIELD =~ ^\.\.$ ]]; then # ..
+			_FIELDS+=(1..-1)
+		elif [[ $_FIELD =~ ^-([0-9]+)$ ]]; then # N
+			_FIELDS+=("$_FIELD")
+
+			# cut(1) style
+		elif [[ $_FIELD =~ ^([0-9]+)-([0-9]+)$ ]]; then # N-M
+			_FIELDS+=("${_FIELD%-*}".."${_FIELD#*-}")
+		elif [[ $_FIELD =~ ^([0-9]+)-$ ]]; then # N-
+			_FIELDS+=("${_FIELD%-*}"..-1)
+		elif [[ $_FIELD =~ ^([0-9]+)$ ]]; then # N
+			_FIELDS+=("$_FIELD")
+		else
+			error "unrecognized field: $_FIELD"
+			return 255
+		fi
+	done
+	local FIELD
+	FIELD="$(IFS=,; echo "${_FIELDS[*]}")"
+
+	if [ -z "${OUTPUT_DELIMITER:-}" ]; then
+		OUTPUT_DELIMITER="${INPUT_DELIMITER:0:1}"
+	fi
+	if [ -n "${INPUT_DELIMITER:1:1}" ]; then
+		INPUT_DELIMITER="[$INPUT_DELIMITER]"
+	fi
+
+	# NOTE: 入力待ちの期間中、プロンプトにawkスクリプトの改行が含まれて表示がおかしくなるので、
+	#       標準入力の場合は入力を一時ファイルに出力してから使う
+	local TMPFILE=""
+	if [ ${#FILES[@]} = 0 ] || [ "${FILES[0]}" = - ]; then
+		TMPFILE="$(mktemp "${TMPDIR:-/tmp}/${FUNCNAME[0]}.XXXX")"
+		command cat > "$TMPFILE"
+	fi
+	command awk -F "${INPUT_DELIMITER:-}" -v OFS="$OUTPUT_DELIMITER" -v field="$FIELD" '
+BEGIN {
+    start = 1
+    until = split(field, fields, ",")
+}
+{
+    for (n = start; n <= until; n++) {
+        if (n > NF) {
+            continue
+        }
+        if (n != start) {
+            printf("%s", OFS)
+        }
+        if (match(fields[n], /^(-?[0-9]+)$/, matched)) {
+            nth = matched[1] > 0 ? matched[1] : NF + matched[1] + 1
+            if (0 < nth) {
+                printf("%s", $nth)
+            }
+        } else if (match(fields[n], /^(-?[0-9]+)\.\.(-?[0-9]+)$/, matched)) {
+            from = matched[1] > 0 ? matched[1] : NF + matched[1] + 1
+            end  = matched[2] > 0 ? matched[2] : NF + matched[2] + 1
+            min  = from <= end ? from : end
+            max  = from <= end ? end  : from
+            needs_delimiter = 0
+            for (m = min; m <= max; m++) {
+                nth = from <= end ? m : max - m + min
+                if (nth < 1 || NF < nth) {
+                    continue
+                }
+                if (needs_delimiter) {
+                    printf("%s", OFS)
+                }
+                printf("%s", $nth)
+                needs_delimiter = 1
+            }
+        }
+    }
+    printf("\n")
+}
+	' "${FILES[@]:-$TMPFILE}"
+
+	if [ -f "${TMPFILE:-}" ]; then
+		command rm -f "${TMPFILE:-}"
+	fi
+}
+function _col() {
+	local cur
+	_init_completion || return
+
+	local opts=(-F -d --field-separator --delimiter --fields --output-delimiter)
+	case "$cur" in
+		-*)
+			readarray -t COMPREPLY < <(compgen -W "${opts[*]}" -- "$cur")
+			;;
+		*)
+			_filedir
+			;;
+	esac
+}
+# XXX: overwride to avoid confliction
+complete -o bashdefault -F _col col
+
+function psgrep() {
+	local PSOPTS=(-elf)
+	local GREPOPTS=("--color=always")
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-L)
+				PSOPTS+=("$ARG")
+				;;
+			*)
+				GREPOPTS+=("$ARG")
+				;;
+		esac
+		shift
+	done
+	command ps "${PSOPTS[@]}" | command grep "${GREPOPTS[@]}" | command grep -v -Fw grep
+}
+alias ps-grep='psgrep'
+alias psg='psgrep'
+
+function puml() {
+	local ARGS=()
+	local TARGETS=()
+	local FILETYPE=svg
+	local MONITOR=no
+	local EDIT=no
+	local DAEMON=no
+	local INOTIFYOPTS=()
+	local USAGE=no
+	local QUIET=no
+	local KILL=no
+	local SUFFIXES=()
+	while [ $# != 0 ]; do
+		case "$1" in
+			-tpng|-tsvg|-teps|-tpdf|-tvdx|-txmi|-thtml|-ttxt|-tutxt)
+				FILETYPE="${1#-t}"
+				;;
+			--help|--usage)
+				USAGE=yes
+				;;
+			# custom options
+			-x|--debug)
+				trap 'trap - RETURN INT; set +o xtrace' RETURN INT
+				set -o xtrace
+				;;
+			-s|-q|--silent|--quiet)
+				QUIET=yes
+				;;
+			-r|--recursive)
+				INOTIFYOPTS+=(--recursive)
+				;;
+			edit|--edit)
+				EDIT=yes
+				;;
+			monitor|--monitor|watch|--watch)
+				MONITOR=yes
+				;;
+			--kill-daemon)
+				KILL=yes
+				;;
+			--oneshot)
+				MONITOR=no
+				;;
+			--suffix)
+				local _SUFFIXES=()
+				read -r -a _SUFFIXES <<< "${2//,/ }"
+				SUFFIXES+=(${_SUFFIXES[@]:+"${_SUFFIXES[@]}"})
+				shift
+				;;
+			--suffix=*)
+				ARG="${1#*=}"
+				local _SUFFIXES=()
+				read -r -a _SUFFIXES <<< "${ARG//,/ }"
+				SUFFIXES+=(${_SUFFIXES[@]:+"${_SUFFIXES[@]}"})
+				;;
+			--list-daemon)
+				command ps -C inotifywait -o pid,ppid,lstart,cmd
+				return
+				;;
+			daemon|--daemon|backbround|--backbround)
+				DAEMON=yes
+				QUIET=yes
+				MONITOR=yes
+				;;
+			-*)
+				ARGS+=("$1")
+				;;
+			*)
+				local REALPATH
+				REALPATH="$(command readlink -f "$1")"
+				if [ ! -e "$1" ]; then
+					if [ "$EDIT" = no ]; then
+						error "no such file or directory: $1"
+						return 255
+					fi
+					touch "$1"
+				fi
+				TARGETS+=("$REALPATH")
+				if [ -d "$1" ]; then
+					MONITOR=yes
+				fi
+				;;
+		esac
+		shift
+	done
+	if [ "$USAGE" = yes ]; then
+		command plantuml -help
+		command cat <<-EOF
+
+		Usage(advanced):
+		puml [OPTION]... <DIR|FILE>
+		puml --monitor DIR ... monitor DIR
+		puml --daemon  DIR ... monitor DIR & daemonize & detach
+		puml --edit   FILE ... monitor DIR & daemonize & emacs
+		OPTION
+		  -x, --debug
+		  -s, --silent
+		  -q, --quiet
+		  -r, --recursive
+		  --kill-daemon
+		  --list-daemon
+		  --oneshot
+		EOF
+		return
+	fi
+
+	local WORKDIR=/var/tmp/www/puml
+	[ -d "$WORKDIR" ] || mkdir -p "$WORKDIR"
+
+	if [ "${#SUFFIXES[@]}" = 0 ]; then
+		SUFFIXES=(puml pu)
+	fi
+	if [ "${KILL:-}" = yes ]; then
+		if executable fzf; then
+			local PID
+			for PID in $(ps -C inotifywait -o pid,ppid,lstart,cmd | FZF_DEFAULT_OPTS="$FZF_ONESHOT_OPTS --tac --header-lines=1" fzf --preview="" | command awk '{print $2, $1}'); do
+				kill -0 "${PID:-}" &>/dev/null || break
+				kill "${PID:-}"
+			done
+		fi
+		return
+	fi
+	if [ "${#TARGETS[@]}" = 0 ]; then
+		if executable fzf-find; then
+			local I FZFFINDOPTS=(--file)
+			readarray -t FZFFINDOPTS -O "${#FZFFINDOPTS[@]}" < <(for I in "${SUFFIXES[@]}"; do echo --include=\"*."$I"\"; done)
+			readarray -t TARGETS < <(fzf-find "${FZFFINDOPTS[@]}")
+		fi
+	fi
+	if [ "$DAEMON" = yes ]; then
+		if [ "${#TARGETS[@]}" = 0 ]; then
+			[ "${QUIET:-}" = yes ] || echo "monitoring default directory: $WORKDIR" >&2
+			TARGETS+=("$WORKDIR")
+		else
+			[ "${QUIET:-}" = yes ] || echo "monitoring directory: ${TARGETS[*]/ /,}" >&2
+		fi
+	fi
+	if [ "${#TARGETS[@]}" = 0 ]; then
+		error "missing TARGET operand"
+		return 255
+	fi
+
+	if [ "${QUIET:-}" = yes ]; then
+		INOTIFYOPTS+=(--quiet)
+	fi
+	if [ "$MONITOR" = yes ]; then
+		local TARGET INOTIFYPROCS
+		INOTIFYPROCS="$(ps -C inotifywait -o cmd www --no-header)"
+		for TARGET in "${TARGETS[@]}"; do
+			command grep -Fwqs "${TARGET:-}" <<< "${INOTIFYPROCS:-}" || continue
+
+			error "already monitoring: $TARGET"
+			return 255
+		done
+		INOTIFYOPTS+=(-e modify -e moved_to -e create "--format=%w%f" "--exclude=/(\..+|^#.+|.+~$)")
+	fi
+
+	ARGS+=(-t"$FILETYPE" -pipe)
+
+	(
+		local PATTERN
+		PATTERN="($(IFS="|"; echo "${SUFFIXES[*]}"))"
+		while true; do
+			local FILE FILENAME
+			if [ "$MONITOR" = no ]; then
+				FILE="${TARGETS[0]}"
+			else
+				FILE="$(inotifywait "${INOTIFYOPTS[@]}" "${TARGETS[@]}")"
+				if [ $? = 143 ] && [ -z "${FILE:-}" ]; then
+					[ "${QUIET:-}" = yes ] || error "interrupted by C-c"
+					break
+				fi
+				if [ ! -f "${FILE:-}" ]; then
+					[ "${QUIET:-}" = yes ] || echo "warn: not file event: $FILE" >&2
+					continue
+				fi
+				if ! [[ "$FILE" =~ \.$PATTERN$ ]]; then
+					[ "${QUIET:-}" = yes ] || echo "warn: no target suffix: $FILE" >&2
+					continue
+				fi
+			fi
+			FILENAME="$(bash-escape "${FILE##*/}")"
+			local INFILE="$WORKDIR"/"$FILENAME".in
+
+			[ "${QUIET:-}" = yes ] || echo "cp -af $FILE $INFILE"
+			command cp -af "$FILE" "$INFILE"
+
+			[ "${QUIET:-}" = yes ] || echo "plantuml ${ARGS[*]} < $INFILE > $WORKDIR/${FILENAME%.*}.$FILETYPE"
+			local CMD=~/bzrroot/beatarch/bin/plantuml
+			command "$CMD" "${ARGS[@]}" < "$INFILE" > "$WORKDIR"/"${FILENAME%.*}"."$FILETYPE"
+			[ "${QUIET:-}" = yes ] || echo created "$WORKDIR/${FILENAME%.*}.$FILETYPE"
+
+			command rm -f "$INFILE"
+			# XXX: 変なゴミファイルが残る場合がある
+			command rm -f "$WORKDIR/\\#${FILENAME%.*}.$FILETYPE"
+
+			[ "$MONITOR" = no ] && break
+		done
+	) &
+	local JOBID
+	JOBID="$(lastjobid)"
+	if [ "$DAEMON" = yes ]; then
+		disown %"$JOBID"
+		JOBID=""
+	elif [ "$EDIT" = yes ]; then
+		# FIXME: C-z で inotify も終了してしまう
+		${PLANTUMLEDITOR:-${EDITOR:-${VISUAL:-emacs}}} "${TARGETS[@]}"
+		kill %"$JOBID"
+	else
+		fg %"$JOBID" >/dev/null
+	fi
+}
+function _puml() {
+	local cur
+	_init_completion || return
+
+	local opts=(-gui -tpng -tsvg -teps -tpdf -tvdx -txmi -thtml -ttxt -tutxt -o -DVAR1 -Sparam1 -r -config -charset -e -metadata -version -checkversion -v -quiet -keepfiles -h -testdot -graphvizdot -p -encodesprite -computeurl -decodeurl -syntax -language -nosuggestengine -checkonly -failfast -failfast2 -pattern -duration -nbthread -nbthread -author -overwrite -printfonts -gui -tpng -tsvg -teps -tpdf -tvdx -txmi -thtml -ttxt -tutxt -metadata -version -quiet -keepfiles -testdot -decodeurl -syntax -language -checkonly -failfast -failfast2 -pattern -duration -overwrite -printfonts)
+	# custom options
+	opts+=(-x --edit --help --quiet --silent --daemon --monitor --backbround --recursive --oneshot --kill-daemon --list-daemon --suffix)
+	case "$cur" in
+		-*)
+			readarray -t COMPREPLY < <(compgen -W "${opts[*]} --watch --help" -- "$cur")
+			;;
+		*)
+			readarray -t COMPREPLY < <(compgen -f -X "!@(*.@(puml|pu))" -- "$cur")
+			if [ ${#COMPREPLY[@]} = 0 ]; then
+				_filedir -d
+			fi
+			;;
+	esac
+}
+complete -o bashdefault -F _puml puml
+
+function e() {
+	local ACTION=start
+	local FORCE=no
+	while [ $# != 0 ]; do
+		case "$1" in
+			-k|--kill|--stop)
+				ACTION=stop
+				;;
+			--force)
+				FORCE=yes
+				;;
+			*)
+			    break;
+			    ;;
+		esac
+		shift
+	done
+	case "$ACTION" in
+		stop)
+			if [ "$FORCE" = yes ]; then
+				emacsclient -e '(progn (defun yes-or-no-p (p) t) (kill-emacs))'
+			else
+				emacsclient -e '(kill-emacs)'
+			fi
+			;;
+		start)
+			command emacsclient -a '' --tty "$@"
+			;;
+		*)
+			error "unsupported command: $ACTION"
+			;;
+	esac
+}
+function _e() {
+	local cur
+	_init_completion || return
+
+	case "$cur" in
+		-*)
+			local opts=(--kill --stop --force)
+			readarray -t opts -O "${#opts[@]}" < <(command-options "${FUNCNAME#_}")
+			readarray -t COMPREPLY < <(compgen -W "${opts[*]}" -- "$cur")
+			;;
+		*)
+			_filedir
+			;;
+	esac
+}
+complete -F _e e
+
+function man() {
+	local ARGS=()
+	local PAGE
+	local SECTION
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-C|--config-file)
+				ARGS+=("$ARG" "$2")
+				shift
+				;;
+			-R|--recode)
+				ARGS+=("$ARG" "$2")
+				shift
+				;;
+			-L|--locale)
+				ARGS+=("$ARG" "$2")
+				shift
+				;;
+			-m|--systems)
+				ARGS+=("$ARG" "$2")
+				shift
+				;;
+			-M|--manpath)
+				ARGS+=("$ARG" "$2")
+				shift
+				;;
+			-S|-s|--sections)
+				ARGS+=("$ARG" "$2")
+				shift
+				;;
+			-e|--extension)
+				ARGS+=("$ARG" "$2")
+				shift
+				;;
+			-P|--pager)
+				ARGS+=("$ARG" "$2")
+				shift
+				;;
+			-r|--prompt)
+				ARGS+=("$ARG" "$2")
+				shift
+				;;
+			-E|--encoding)
+				ARGS+=("$ARG" "$2")
+				shift
+				;;
+			[0-9])
+				SECTION="$ARG"
+				;;
+			-*)
+				ARGS+=("$ARG")
+				;;
+			*)
+				PAGE="$ARG"
+				;;
+		esac
+		shift
+	done
+	command env \
+		LESS_TERMCAP_mb="$(printf "\e[1;31m")" \
+		LESS_TERMCAP_md="$(printf "\e[1;31m")" \
+		LESS_TERMCAP_me="$(printf "\e[0m")" \
+		LESS_TERMCAP_se="$(printf "\e[0m")" \
+		LESS_TERMCAP_so="$(printf "\e[1;44;33m")" \
+		LESS_TERMCAP_ue="$(printf "\e[0m")" \
+		LESS_TERMCAP_us="$(printf "\e[1;32m")" \
+		man ${ARGS[@]:+"${ARGS[@]}"} ${SECTION:+"$SECTION"} ${PAGE:+"$PAGE"}
+}
+
+function date() {
+	local CMDARGS=()
+	local DATESTR
+	local FORMAT="%F %T"
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			+*)
+				FORMAT="${ARG#+}"
+				;;
+			-I*|-R|--rfc-email|--rfc-3339=*|--iso-8601|--iso-8601=*)
+				CMDARGS+=("$ARG")
+				FORMAT=""
+				;;
+			--rfc-3339)
+				CMDARGS+=("$ARG" "$2")
+				FORMAT=""
+				shift
+				;;
+			-d|--date)
+				DATESTR="$2"
+				shift
+				;;
+			-d*)
+				DATESTR="${ARG:2}"
+				;;
+			--date=*)
+				DATESTR="${ARG#*=}"
+				;;
+			[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9])
+				DATESTR="$ARG"
+				;;
+			@[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9])
+				DATESTR="${ARG:1}"
+				;;
+			*)
+				CMDARGS+=("$ARG")
+				;;
+		esac
+		shift
+	done
+	if [ -n "${DATESTR:-}" ]; then
+		if [[ "$DATESTR" =~ ^[0-9]{10}$ ]]; then
+			DATESTR="@$DATESTR"
+		fi
+		CMDARGS+=(--date "$DATESTR")
+	fi
+
+	command date ${FORMAT:+"+$FORMAT"} ${CMDARGS[@]:+"${CMDARGS[@]}"}
+}
+
+# Usage: $FUNCNAME EXPRESSION
+function calc() {
+	local ARGS=()
+	local FORMAT
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-c|--format)
+				FORMAT="$2"
+				shift
+				;;
+			--format=*)
+				FORMAT="${ARG#*=}"
+				;;
+			[0-9]*.[0-9]*)
+				ARGS+=("$ARG")
+				;;
+			[0-9]*)
+				ARGS+=("$ARG.0")
+				;;
+			*)
+				ARGS+=("$ARG")
+				;;
+		esac
+		shift
+	done
+
+	local RESULT
+	RESULT="$(command python <<< "print(${ARGS[*]})")" || return
+	if [ -z "${FORMAT:-}" ]; then
+		if [ "${RESULT=:-}" = "${RESULT%.0}" ]; then
+			FORMAT="%g"
+		else
+			FORMAT="%d"
+		fi
+	fi
+	RESULT="$(command awk -v fmt="$FORMAT" '{printf(fmt, $1)}' <<< "$RESULT")" || return
+
+	echo-with-cbcopy -N "$RESULT"
+}
+alias cacl='calc'
+
+# Usage: $FUNCNAME VALUE...
+function sum() {
+	local VALUES=()
+	if [ $# = 0 ]; then
+		read -r -a VALUES < <(command xargs)
+	else
+		VALUES=(${@:+"$@"})
+	fi
+	((0 < "${#VALUES[@]}")) || return 0
+
+	calc "$(IFS="+"; echo "${VALUES[*]}")"
+}
+
+# Usage: $FUNCNAME [OPTION...] AFTER BEFORE
+function difftime() {
+	local AFTER
+	local BEFORE
+	local REVERSE=no
+	local AFTER_FORMAT
+	local BEFORE_FORMAT
+	local RESULT_FORMAT="%H:%M:%S"
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-r|--reverse)
+				REVERSE=yes
+				;;
+			-s|--second)
+				RESULT_FORMAT="%s"
+				;;
+			-f|--format)
+				RESULT_FORMAT="$2"
+				shift
+				;;
+			--format=*)
+				RESULT_FORMAT="${ARG#*=}"
+				;;
+			--after-format)
+				AFTER_FORMAT="$2"
+				shift
+				;;
+			--after-format=*)
+				AFTER_FORMAT="${ARG#*=}"
+				;;
+			--before-format)
+				BEFORE_FORMAT="$2"
+				shift
+				;;
+			--before-format=*)
+				BEFORE_FORMAT="${ARG#*=}"
+				;;
+			+*)
+				RESULT_FORMAT="${ARG#+}"
+				;;
+			*)
+				if [ -z "${AFTER:-}" ]; then
+					AFTER="$ARG"
+				elif [ -z "${BEFORE:-}" ]; then
+					BEFORE="$ARG"
+				else
+					error "garbage argument: $ARG"
+					return 255
+				fi
+				;;
+		esac
+		shift
+	done
+	if [ -z "${BEFORE:-}" ]; then
+		IFS= read -r BEFORE
+	fi
+	if [ -z "${AFTER:-}" ]; then
+		IFS= read -r AFTER
+	fi
+
+	function difftime-parse-datetime() {
+		local DATETIME="${1:-}"
+		if [[ "${DATETIME:-}" =~ (^|[^[:alnum:]])(20[0-9][0-9]/[0-9][0-9]/[0-9][0-9]\ [012][0-9]:[0-6][0-9]:[0-6][0-9])($|[^[:alnum:]]) ]]; then
+			echo "%Y/%m/%d %H:%M:%S"
+			echo "${BASH_REMATCH[2]}"
+		elif [[ "${DATETIME:-}" =~ (^|[^[:alnum:]])(20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]\ [012][0-9]:[0-6][0-9]:[0-6][0-9])($|[^[:alnum:]]) ]]; then
+			echo "%Y-%m-%d %H:%M:%S"
+			echo "${BASH_REMATCH[2]}"
+		elif [[ "${DATETIME:-}" =~ (^|[^[:alnum:]])([A-Z][a-z]{2}\ [\ 1-9][0-9]\ [012][0-9]:[0-6][0-9]:[0-6][0-9])($|[^[:alnum:]]) ]]; then
+			echo "%b %_d %H:%M:%S"
+			echo "${BASH_REMATCH[2]}"
+		elif [[ "${DATETIME:-}" =~ (^|[^[:alnum:]])([0-9][0-9]/[A-Z][a-z]{2}/20[0-9][0-9]:[012][0-9]:[0-6][0-9]:[0-6][0-9])($|[^[:alnum:]]) ]]; then
+			echo "%d/%b/%Y:%H:%M:%S"
+			echo "${BASH_REMATCH[2]}"
+		elif [[ "${DATETIME:-}" =~ (^|[^[:alnum:]])([A-Z][a-z]{2}\ [A-Z][a-z]{2}\ [0-9][0-9]\ [012][0-9]:[0-6][0-9]:[0-6][0-9]\.[0-9]{6}\ 20[0-9][0-9])($|[^[:alnum:]]) ]]; then
+			echo "%a %b %d %H:%M:%S.%3N %Y"
+			echo "${BASH_REMATCH[2]}"
+		elif [[ "${DATETIME:-}" =~ (^|[^[:alnum:]])([A-Z][a-z]{2},\ [0-9][0-9]\ [A-Z][a-z]{2}\ 20[0-9][0-9]\ [012][0-9]:[0-6][0-9]:[0-6][0-9])($|[^[:alnum:]]) ]]; then
+			echo "%a, %d %b %Y %H:%M:%S"
+			echo "${BASH_REMATCH[2]}"
+		elif [[ "${DATETIME:-}" =~ (^|[^[:alnum:]])([A-Z][a-z]{2}\ [0-9][0-9]\ [A-Z][a-z]{2}\ 20[0-9][0-9]\ [012][0-9]:[0-6][0-9]:[0-6][0-9]\.[0-9]{6})($|[^[:alnum:]]) ]]; then
+			echo "%a %d %b %Y %H:%M:%S"
+			echo "${BASH_REMATCH[2]}"
+		elif [[ "${DATETIME:-}" =~ (^|[^[:alnum:]])([012][0-9]:[0-6][0-9]:[0-6][0-9])($|[^[:alnum:]]) ]]; then
+			echo "%H:%M:%S"
+			echo "${BASH_REMATCH[2]}"
+		elif [[ "${DATETIME:-}" =~ (^|[^[:alnum:]])(20[0-9][0-9][0-9][0-9][0-9][0-9])($|[^[:alnum:]]) ]]; then
+			echo "%Y%m%d"
+			echo "${BASH_REMATCH[2]}"
+		fi
+	}
+
+	local _AFTERS=() _BEFORES=()
+	readarray -t _AFTERS  <<< "$(difftime-parse-datetime "$AFTER")"
+	readarray -t _BEFORES <<< "$(difftime-parse-datetime "$BEFORE")"
+	unset -f difftime-parse-datetime
+	[ -n "${AFTER_FORMAT:-}"  ] || AFTER_FORMAT="${_AFTERS[0]}"
+	[ -n "${BEFORE_FORMAT:-}" ] || BEFORE_FORMAT="${_BEFORES[0]}"
+	AFTER="${_AFTERS[1]}"
+	BEFORE="${_BEFORES[1]}"
+
+	if [ "$REVERSE" = yes ]; then
+		local TMP="${AFTER:-}"
+		AFTER="${BEFORE:-}"
+		BEFORE="${TMP:-}"
+	fi
+
+	local DELTA
+	DELTA="$(LC_ALL=C python <<-EOF
+	from datetime import datetime, timedelta
+	after  = datetime.strptime('$AFTER',  '$AFTER_FORMAT')
+	before = datetime.strptime('$BEFORE', '$BEFORE_FORMAT')
+	delta = after - before
+	print(delta.total_seconds())
+	EOF
+	)"
+	[ -n "${DELTA:-}" ] || return
+
+	echo-with-cbcopy -N "$(TZ="GMT" command date -d @"$DELTA" +"$RESULT_FORMAT")"
+}
+alias timediff='difftime'
+
+function echo-with-cbcopy() {
+	local CMDOPTS=()
+	local NORUN=no
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			--)
+				shift
+				break
+				;;
+			-N|--no-run-if-empty)
+				NORUN=yes
+				;;
+			-[neE])
+				CMDOPTS+=("$ARG")
+				;;
+			*)
+				break
+				;;
+		esac
+		shift
+	done
+	if [ $# = 0 ] && [ "${NORUN:-}" = yes ]; then
+		return 0
+	fi
+
+	echo ${CMDOPTS[@]:+"${CMDOPTS[@]}"} "$*"
+	if stdout-is-tty; then
+		cbcopy "$@"
+	fi
+}
+
+function paste64() {
+	printf "\e]52;0;"
+	base64 | tr -d '\012'
+	printf "\e\\"
+}
+
+# Usage: $FUNCNAME [VALUE...]
+function cbcopy() {
+	x-selection --clipboard ${@:+"$@"}
+}
+
+# Usage: $FUNCNAME [VALUE...]
+function xcopy() {
+	x-selection --primary ${@:+"$@"}
+}
+
+# Usage: $FUNCNAME TYPE [OPTION...] [VALUE...]
+function x-selection() {
+	local ONELINE=no
+	local TYPE
+	local FILE
+	local ECHO=no
+	local NORUN=no
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-N|--no-run-if-empty)
+				NORUN=yes
+				;;
+			--echo)
+				ECHO=yes
+				;;
+			--stdin)
+				FILE=/dev/stdin
+				;;
+			--file)
+				FILE="$2"
+				shift
+				;;
+			--file=*)
+				FILE="${ARG#*=}"
+				;;
+			--type)
+				TYPE="--$2"
+				shift
+				;;
+			--type=*)
+				TYPE="${ARG#*=}"
+				;;
+			--clipboard|--primary)
+				TYPE="$ARG"
+				;;
+			--oneline)
+				ONELINE=yes
+				;;
+			--)
+				shift
+				break
+				;;
+			*)
+				break
+				;;
+		esac
+		shift
+	done
+	if [ "${NORUN:-}" = yes ] && [ -z "$*" ]; then
+		return 0
+	fi
+	if [ -z "${TYPE:-}" ]; then
+		error "missing TYPE operand"
+		return 255
+	fi
+	if [ $# = 0 ] && [ -z "${FILE:-}" ]; then
+		if [ ! -p /dev/stdin ] && [ ! -s /dev/stdin ]; then
+			error "missing INPUT"
+			return 255
+		fi
+		FILE=/dev/stdin
+	fi
+
+	function x-selection-copy() {
+		stdout-is-tty || return 0
+		[[ -n "${SSH_CONNECTION:-}" || -n "${DISPLAY:-}" ]] || return 0
+
+		local TYPE="${1:?error: missing TYPE operand}"
+		if [ -n "${SSH_CONNECTION:-}" ] && [ -n "${SSH_REVERSE_TUNNEL_PORT:-}" ]; then
+			# XXX: 本当はTeraTerm=paste64, Gnome=xsetにしたいが、区別がつかないので両方実行する
+			local INPUTS
+			readarray INPUTS
+			paste64 < <(IFS=''; echo -n "${INPUTS[*]}")
+			if command ssh -q -o LogLevel=QUIET -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -p "$SSH_REVERSE_TUNNEL_PORT" "$SSH_REVERSE_TUNNEL_USER"@localhost -- type xsel </dev/null &>/dev/null; then
+				command ssh -p "$SSH_REVERSE_TUNNEL_PORT" "$SSH_REVERSE_TUNNEL_USER"@localhost -- DISPLAY=:0 xsel --input "$TYPE" < <(IFS=''; echo -n "${INPUTS[*]}")
+			fi
+		elif executable xsel; then
+			command xsel --input "$TYPE"
+		elif executable xclip; then
+			command xclip --selection "${TYPE#--}"
+		fi
+	}
+
+	local INPUTS=()
+	if [ -n "${FILE:-}" ]; then
+		if [ "${ONELINE:-}" = yes ]; then
+			local VAL
+			while IFS= read -r VAL; do
+				INPUTS+=("$(bash-escape "$VAL")")
+			done < "$FILE"
+			# NOTE: "<<<" だと改行コードが余分についてしまうので"echo -n"を使う
+			x-selection-copy "$TYPE" < <(echo -n "${INPUTS[*]}")
+		else
+			readarray INPUTS < "$FILE"
+			# NOTE: "<<<" だと改行コードが余分についてしまうので"echo -n"を使う
+			x-selection-copy "$TYPE" < <(IFS=''; echo -n "${INPUTS[*]}")
+		fi
+	else
+		if [ "${ONELINE:-}" = yes ]; then
+			local VAL
+			for VAL in "$@"; do
+				IFS= read -r VAL <<< "$VAL" # trim EOL
+				INPUTS+=("$(bash-escape "$VAL")")
+			done
+		else
+			INPUTS=("$@")
+		fi
+		# NOTE: "<<<" だと改行コードが余分についてしまうので"echo -n"を使う
+		x-selection-copy "$TYPE" < <(echo -n "${INPUTS[@]}")
+	fi
+	unset -f x-selection-copy
+
+	if [ "${ECHO:-}" = yes ]; then
+		echo "${INPUTS[@]}"
+	fi
+}
+
+# NOTE: xargs でエイリアスを使うためのラッパー関数
+# XXX: スペースの扱いなど非互換の動きがある
+[ -n "${XARGS_ARG_MAX:-}" ] || readonly XARGS_ARG_MAX="$(LANG=C command xargs --show-limits --no-run-if-empty </dev/null 2>&1 | awk '/^Size of command buffer/{print $NF}')"
+function xargs() {
+	local CMD=()
+	local EXIT=no
+	local VERBOSE=no
+	local EXEC_FORCE=yes
+	local EOL=$'\n'
+	local DELIMITER="$IFS"
+	local MAX_ARGS=0
+	local MAX_LINES=0
+	local MAX_CHARS=0
+	local INPUT=/dev/stdin
+	local REPLACE
+	local ARG_MAX="${XARGS_ARG_MAX:-4096}"
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$1" in
+			--help|--version|--show-limits)
+				command xargs "$@"
+				return
+				;;
+			-0|--null)
+				EOL=''
+				;;
+			-a|--arg-file)
+				INPUT="$2"
+				shift
+				;;
+			--arg-file=*)
+				INPUT="${1#*=}"
+				;;
+			-d|--delimiter)
+				DELIMITER="$2"
+				shift
+				;;
+			--delimiter=*)
+				DELIMITER="${1#*=}"
+				;;
+			-s|--max-chars)
+				MAX_CHARS="$2"
+				shift
+				;;
+			-s[0-9]*)
+				MAX_CHARS="${1:2}"
+				;;
+			--max-chars=[0-9]*)
+				MAX_CHARS="${1#*=}"
+				;;
+			-L|--max-lines)
+				MAX_LINES="$2"
+				shift
+				;;
+			-L[0-9]*)
+				MAX_LINES="${1:2}"
+				;;
+			--max-lines=[0-9]*)
+				MAX_LINES="${1#*=}"
+				;;
+			-n|--max-args)
+				MAX_ARGS="$2"
+				shift
+				;;
+			-n[0-9]*)
+				MAX_ARGS="${1:2}"
+				;;
+			--max-args=[0-9]*)
+				MAX_ARGS="${1#*=}"
+				;;
+			-x|--exit)
+				EXIT=yes
+				;;
+			-t|--verbose)
+				VERBOSE=yes
+				;;
+			-r|--no-run-if-empty)
+				EXEC_FORCE=no
+				;;
+			-E|-e*|--eof*|-P|--max-proc*|-p|--interactive|--process-slot-var*|-l*|-i*|--replace*)
+				warning "not supported option: '$1', please try 'xargs --builtin' or 'command xargs'"
+				;;
+			-I)
+				REPLACE="$2"
+				shift
+				;;
+			-I*)
+				REPLACE="${1:2}"
+				;;
+			--)
+				CMD=("${@:2}")
+				break
+				;;
+			# custom options
+			--builtin)
+				command xargs "${@:2}"
+				return
+				;;
+			*)
+				CMD=("$@")
+				break
+				;;
+		esac
+		shift
+	done
+	if [ ${#CMD[@]} = 0 ]; then
+		CMD=(echo)
+	fi
+	if [ -n "${REPLACE:-}" ]; then
+		MAX_LINES=1
+		MAX_ARGS=0
+		EXEC_FORCE=no
+	fi
+	if (( 0 < "$MAX_LINES" )) || (( 0 < "$MAX_CHARS" )); then
+		EXIT=yes
+	fi
+	if (( "$MAX_CHARS" <= 0 )) || (( "$ARG_MAX" < "$MAX_CHARS" )); then
+		MAX_CHARS="$ARG_MAX"
+	fi
+
+	# XXX: 呼び出し元で定義された変数を参照・更新している・・・
+	function xargs-run-command-by-line() {
+		if [ -n "${REPLACE:-}" ]; then
+			[ "$VERBOSE" = yes ] && echo "${CMD[@]//$REPLACE/${_LINES[@]}}"
+			"${CMD[@]//$REPLACE/${_LINES[@]}}"
+		else
+			local _cmd=()
+			readarray -t _cmd < <(array-escape "${CMD[@]}")
+			local _lines=()
+			if [ "$MAX_LINES" = 0 ]; then
+				# expand all elements
+				for entry in ${_LINES[@]:+"${_LINES[@]}"}; do
+					_lines+=("$entry")
+				done
+			else
+				_lines=("${_LINES[@]}")
+			fi
+			readarray -t _lines < <(array-quote "${_lines[@]}")
+			[ "$VERBOSE" = yes ] && echo "${_cmd[@]}" "${_lines[@]}"
+			eval "${_cmd[@]}" "${_lines[@]}"
+			cbcopy "${_lines[@]}" # XXX: 最後の実行内容しか残らない
+		fi
+		_LINES=() # XXX: 呼び出し元の変数をリセット
+	}
+	function xargs-run-command-by-arg() {
+		local _cmd=()
+		readarray -t _cmd < <(array-escape "${CMD[@]}")
+		local i _args=()
+		for ((i = 0; i < ${#ARGS[@]}; i += MAX_ARGS)); do
+			_args=("${ARGS[@]:$i:$MAX_ARGS}")
+			[ "$MAX_ARGS" = ${#_args[@]} ] || break
+			readarray -t _args < <(array-escape "${_args[@]}")
+			[ "$VERBOSE" = yes ] && echo "${_cmd[@]}" "${_args[@]}"
+			eval "${_cmd[@]}" "${_args[@]}"
+			cbcopy "${_args[@]}" # XXX: 最後の実行内容しか残らない
+			_args=()
+		done
+		ARGS=(${_args[@]:+"${_args[@]}"}) # XXX: 呼び出し元の変数をリセット
+	}
+
+	# NOTE: 'LINES' variable has be already used by X-Window-System.
+	local LINE _LINES=() ARGS=() NEEDS_EXEC_FORCE="${EXEC_FORCE:-no}" LINES_LEN CMDS_LEN
+	CMDS_LEN="$(echo -n "${#CMD[@]} " | command wc -c)"
+	LINES_LEN="$CMDS_LEN"
+	# build command line with flushing if needed
+	while IFS= read -r -d "${EOL:-}" LINE; do
+		[[ "$LINE" =~ [^[:space:]] ]] || continue # skip 'blank' line
+
+		if [ "$EXIT" = yes ] && (( "$MAX_CHARS" < ${#LINE} )); then
+			error "too long line: ${#LINE} (limit=$MAX_CHARS)"
+			return 1
+		fi
+
+		if (( 0 < "$MAX_LINES" )) && (( 0 < ${#_LINES[@]} )); then
+			# NOTE: -Lオプション時は空白文字で終わる行は後続行に連結する
+			local PREVLINE="${_LINES[*]:${#_LINES[*]}-1:1}"
+			if [[ "$PREVLINE" =~ ^.+[[:space:]]$ ]]; then
+				LINE="$PREVLINE$LINE"
+				_LINES=("${_LINES[@]:0:${#_LINES[@]}-1}")
+				LINES_LEN=$((LINES_LEN - ${#PREVLINE}))
+			fi
+		fi
+
+		if ( (( "$MAX_CHARS" <= "$LINES_LEN" )) ) ||
+			   ( (( 0 < "$MAX_LINES" )) && (( "$MAX_LINES" <= ${#_LINES[@]})) ); then
+			xargs-run-command-by-line
+			LINES_LEN="$CMDS_LEN"
+			NEEDS_EXEC_FORCE=no
+		elif (( 0 < "$MAX_ARGS" )) && (( "$MAX_ARGS" <= ${#ARGS[@]} )); then
+			xargs-run-command-by-arg
+			_LINES=(${ARGS[@]:+"${ARGS[@]}"})
+			LINES_LEN="$CMDS_LEN"
+			NEEDS_EXEC_FORCE=no
+		fi
+		_LINES+=("$LINE")
+		LINES_LEN=$((LINES_LEN + ${#LINE}))
+		local _ARGS
+		IFS="${DELIMITER:-}" read -r -a _ARGS <<< "$LINE"
+		ARGS+=(${_ARGS[@]:+"${_ARGS[@]}"})
+	done < "$INPUT"
+
+	# flush left argument
+	if (( 0 < ${#_LINES[@]} )); then
+		if (( 0 < "$MAX_LINES" )); then
+			xargs-run-command-by-line
+		else
+			if (( 0 < "$MAX_ARGS" )); then
+				xargs-run-command-by-arg
+			fi
+			if (( 0 < "${#ARGS[@]}" )); then
+				MAX_ARGS="${#ARGS[@]}"
+				xargs-run-command-by-arg
+			fi
+		fi
+	elif [ "${NEEDS_EXEC_FORCE:-}" = yes ]; then
+		# NOTE: 互換対応: オリジナルは入力がない場合でも空行を出力する
+		[ "$VERBOSE" = yes ] && echo "${CMD[@]}" ${_LINES[@]:+"${_LINES[@]}"}
+		"${CMD[@]}" ${_LINES[@]:+"${_LINES[@]}"}
+	fi
+}
+function _xargs() {
+	local cur
+	_init_completion || return
+
+	case "$cur" in
+		-*)
+			local opts
+			readarray -t opts < <(command-options "${FUNCNAME#_}")
+			opts+=(--builtin)
+			readarray -t COMPREPLY < <(compgen -W "${opts[*]}" -- "$cur")
+			;;
+		*)
+			readarray -t COMPREPLY < <(compgen -abc -A function -- "$cur")
+			;;
+	esac
+}
+complete -F _xargs xargs
+
+function lastjobid() {
+	LANG=C jobs | command grep -E -o "^\[[0-9]+\]" | command sed -nr '${s/^\[([0-9]+)\]/\1/p}'
+}
+
+function log-hoge() {
+	command cat <<-'EOF'
+	echo "HOGE: ${BASH_SOURCE[0]:-?}:${BASH_LINENO[0]:-?} ${FUNCNAME[0]:-function}()"
+
+	trace(fp, "HOGE: %s:%d ", __func__, __LINE__);
+
+	printf("HOGE: %s:%d \n", __func__, __LINE__);
+
+	log_info("HOGE: %s:%d ", __func__, __LINE__);
+
+	fprintf(stderr, "HOGE: %s:%d: %s: \n", __FILE__, __LINE__, __func__);
+
+	syslog(LOG_INFO, "HOGE: %s:%d ", __func__, __LINE__);
+	EOF
+}
+
+alias oge='hoge'
+alias hoge='log-hoge'
+
+# Usage: $FUNCNAME [OPTION]... [NUM]
+function numfmt() {
+	local CMDOPTS=()
+	local CMDARGS=()
+	local FROMUNIT=auto
+	local TOUNIT=iec-i
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			--from)
+				FROMUNIT="$2"
+				shift
+				;;
+			--to)
+				TOUNIT="$2"
+				shift
+				;;
+			--from=*)
+				FROMUNIT="${ARG#*=}"
+				;;
+			--to=*)
+				TOUNIT="${ARG#*=}"
+				;;
+			-d|--delimiter|--field|--format|--from-unit|--invalid|--padding|--round|--suffix|--to-unit)
+				CMDOPTS+=("$ARG" "$2")
+				shift
+				;;
+			-*)
+				CMDOPTS+=("$ARG")
+				;;
+			*)
+				# フォーマットを正規化
+				ARG="$(sed -r 's/([kmgtp])(i)?([bB])?/\U\1\L\2/g' <<< "${ARG//,/}")"
+				CMDARGS+=("$ARG")
+				;;
+		esac
+		shift
+	done
+	if [ "${#CMDARGS[@]}" != 0 ]; then
+		local NUM
+		NUM="$(calc --format=%f "${CMDARGS[@]}" 2>/dev/null)"
+		if [ -n "${NUM:-}" ]; then
+			CMDARGS=("$NUM")
+		fi
+	fi
+
+	local CMDPATH CMD
+	if CMDPATH="$(command-path "${FUNCNAME[0]}")"; then
+		CMD="$CMDPATH"
+	else
+		CMD=__"${FUNCNAME[0]}"
+	fi
+	"$CMD" --from="$FROMUNIT" --to="$TOUNIT" ${CMDOPTS[@]:+"${CMDOPTS[@]}"} ${CMDARGS[@]:+"${CMDARGS[@]}"}
+}
+
+# TODO:
+#   -d, --delimiter=X    use X instead of whitespace for field delimiter
+#       --field=FIELDS   replace the numbers in these input fields (default=1) see FIELDS below
+#       --grouping       use locale-defined grouping of digits, e.g. 1,000,000 (which means it has no effect in the C/POSIX locale)
+#       --header[=N]     print (without converting) the first N header lines; N defaults to 1 if not specified
+#       --invalid=MODE   failure mode for invalid numbers: MODE can be: abort (default), fail, warn, ignore
+#       --padding=N      pad the output to N characters; positive N will right-align; negative N will left-align; padding is ignored if the output is wider than N; the default is to automatically pad if a whitespace is found
+#       --round=METHOD   use METHOD for rounding when scaling; METHOD can be: up, down, from-zero (default), towards-zero, nearest
+#   -z, --zero-terminated    line delimiter is NUL, not newline
+
+# FIELDS supports cut(1) style field ranges:
+#   N    N'th field, counted from 1
+#   N-   from N'th field, to end of line
+#   N-M  from N'th to M'th field (inclusive)
+#   -M   from first to M'th field (inclusive)
+#   -    all fields
+# Multiple fields/ranges can be separated with commas
+if ! executable --file numfmt; then
+	function __numfmt() {
+		local UNITS=("" "K" "M" "G" "T" "P") # XXX: "E" "Z" "Y" はオーバーフロー
+		local CMDARGS=()
+		local FORMAT="%g"
+		local FROM_UNIT_STR=auto
+		local TO_UNIT_STR=si
+		local SUFFIX
+		local FROM_BASE_UNIT=1
+		local TO_BASE_UNIT=1
+		while [ $# != 0 ]; do
+			local ARG="$1"
+			case "$ARG" in
+				--debug|--help|--version)
+					warn "ignored unimplemented option: $ARG"
+					;;
+				--format)
+					FORMAT="$2"
+					shift
+					;;
+				--format=*)
+					FORMAT="${ARG#*=}"
+					;;
+				--from)
+					FROM_UNIT_STR="$2"
+					shift
+					;;
+				--to)
+					TO_UNIT_STR="$2"
+					shift
+					;;
+				--from=*)
+					FROM_UNIT_STR="${ARG#*=}"
+					;;
+				--to=*)
+					TO_UNIT_STR="${ARG#*=}"
+					;;
+				--from-unit)
+					FROM_BASE_UNIT="$2"
+					shift
+					;;
+				--from-unit=*)
+					FROM_BASE_UNIT="${ARG#*=}"
+					;;
+				--to-unit)
+					TO_BASE_UNIT="$2"
+					shift
+					;;
+				--to-unit=*)
+					TO_BASE_UNIT="${ARG#*=}"
+					;;
+				--suffix)
+					SUFFIX="$2"
+					shift
+					;;
+				--suffix=*)
+					SUFFIX="${ARG#*=}"
+					;;
+				-*)
+					error "unrecognized option: '$ARG"
+					return 255
+					;;
+				*)
+					if [[ "$ARG" =~ ^[0-9]+([A-Z]i?)?$ ]]; then
+						CMDARGS+=("$ARG")
+					elif [[ "$ARG" =~ ^[0-9.]+([A-Z]i?)?$ ]]; then
+						# XXX: bashで小数点の計算ができないため、四捨五入した値を使う
+						CMDARGS+=("$(command awk '{print int($1 + 0.5)}' <<< "${ARG%[A-Z]*}")""${ARG#${ARG%[A-Z]*}}")
+					else
+						error "invalid NUMBER: '$ARG'"
+						return 255
+					fi
+					;;
+			esac
+			shift
+		done
+
+		local NUM
+		if [ "${#CMDARGS[@]}" = 0 ]; then
+			cat -
+		else
+			(IFS=$'\n'; echo "${CMDARGS[*]}")
+		fi | \
+			while read -r NUM; do
+				local INPUT_UNIT_STR
+				if [[ $NUM =~ ^([0-9]+)([^0-9]+)$ ]]; then
+					NUM="${BASH_REMATCH[1]}"
+					INPUT_UNIT_STR="${BASH_REMATCH[2]}"
+				fi
+				local FROM_UNIT=1000
+				if [[ "${FROM_UNIT_STR:-}" == iec* ]] || [[ "${INPUT_UNIT_STR:-}" =~ [A-Z]i$ ]]; then
+					FROM_UNIT=1024
+				fi
+				local FROM_EXP
+				for ((FROM_EXP = ${#UNITS[@]} - 1; 0 <= FROM_EXP; FROM_EXP--)); do
+					[[ "${UNIT:-}" =~ ${UNITS[FROM_EXP]}i? ]] || continue
+					break
+				done
+				local TO_UNIT=1000
+				local TO_SUFFIX=""
+				if [[ "${TO_UNIT_STR:-}" == iec* ]]; then
+					TO_UNIT=1024
+					TO_SUFFIX="i"
+				fi
+				local RAW="$((NUM * FROM_BASE_UNIT * (FROM_UNIT ** FROM_EXP)))"
+				local TO_EXP
+				for ((TO_EXP = ${#UNITS[@]} - 1; 0 <= TO_EXP; TO_EXP--)); do
+					((TO_UNIT ** TO_EXP <= RAW)) || continue
+					printf "${FORMAT}%s%s\n" "$((RAW * TO_BASE_UNIT / (TO_UNIT ** TO_EXP)))" \
+					       "${UNITS[TO_EXP]:+${UNITS[TO_EXP]}${TO_SUFFIX:-}}" \
+					       "${SUFFIX:-}"
+					break
+				done
+			done
+	}
+fi
+
+function locate() {
+	local PATHS=()
+	readarray -t PATHS < <(command locate "$@")
+	(IFS=$'\n'; echo "${PATHS[*]}")
+	cbcopy -N "${PATHS[@]}"
+}
+
+#
+# 3rd party GUI utilitiy
+#
+GUI_CMDS=(evince gedit firefox astah-vwr oocalc meld remote-viewer libreoffice)
+for CMD in ${GUI_CMDS[@]:+"${GUI_CMDS[@]}"}; do
+	# NOTE: eval to avoiding SC2139 by shellcheck
+	eval alias "$CMD='exec-background $CMD'"
+done
+
+# shortcut aliases
+alias pdf='evince'
+alias edit='gedit'
+alias astah='astah-vwr'
+alias office='libreoffice'
+
+function win10() {
+	local domain=win10
+
+	if LANG=C virsh list | awk -v domain="$domain" '$2 == domain && $3 == "running" {e=1} END{exit !e}'; then
+		virsh start "$domain"
+	fi
+
+	remote-viewer spice://127.0.0.1:5902
+}
+
+function wireshark() {
+	local WORKDIR=/tmp/runtime-wireshark
+	[ -d "$WORKDIR" ] || sudo mkdir -p "$WORKDIR"
+
+	exec-background sudo env XDG_RUNTIME_DIR="$WORKDIR" wireshark
+}
+
+function disable-colourify() {
+	local COLOURIFY=colourify
+	local CMD
+	for CMD in "$@"; do
+		[ "$(command-type "$CMD")" = alias ] || continue
+		command alias "$COLOURIFY" | command cut -d' ' -f2- | command grep -Fq "='$COLOURIFY " || continue
+
+		unalias "$CMD"
+	done
+}
+# c.f. /etc/grc.conf
+#      (^|[/\w\.]+/)(g?cc|[gc]\+\+)\s
+#      (^|[/\w\.]+/)g?make\s?
+disable-colourify {,g}make {,g}cc {g,c}++

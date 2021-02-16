@@ -1,0 +1,29 @@
+# -*-Shell-script-*-
+#
+# This file is not a stand-alone shell script.
+# This provides functions to completion that source it.
+
+# aliases
+complete -F _command c
+complete -F _command s suod sudu
+complete -c t tyep
+
+function complete-reload() {
+	# NOTE: extglob needs to load bash-completion
+	local EXTGLOB
+	EXTGLOB="$(shopt extglob | command awk '{print $2}')"
+	EXTGLOB="${EXTGLOB:-off}"
+	[ "$EXTGLOB" = off ] && shopt -s extglob
+	include "$HOME"/.bash_completion
+	[ "$EXTGLOB" = off ] && shopt -u extglob
+}
+
+function complete-function() {
+	local CMD="${1:?error: missing COMMAND}"
+	command complete -p "$CMD" 2>/dev/null | command awk '/ -F /{print $(NF-1)}'
+}
+
+# XXX: user file not sourced by bash-completion on Cent5
+if (( ${BASH_VERSINFO[0]:-} < 4 )); then
+	complete-reload
+fi

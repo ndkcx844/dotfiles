@@ -1,0 +1,624 @@
+# -*-Shell-script-*-
+#
+# This file is not a stand-alone shell script.
+# This provides functions to bash that source it.
+
+# aliases for TYPO
+alias suod='sudo'
+alias sudu='sudo'
+alias tyep='type'
+alias bahs='bash'
+alias unmount='umount'
+
+alias ffg='fg'
+alias fgfg='fg'
+
+alias ca='cat'
+alias caat='cat'
+alias caaat='cat'
+
+alias sl='ls'
+alias lls='ls'
+
+# aliases for shortcuts
+alias c='command'
+alias s='sudo'
+alias h='head'
+
+# for compatibility with bash3
+if ((${BASH_VERSINFO[0]:-0} < 4)); then
+	function readarray() {
+		local ARRAY_NAME=MAPFILE
+		local FD=0
+		local TRIM_EOL=no
+		local DELIMITER=$'\n'
+		local MAX_COUNT=0
+		local ARRAY_INDEX=""
+		local CALLBACK=""
+		local QUANTUM=5000
+		local INPUT_OFFSET=0
+		while [ $# != 0 ]; do
+			local ARG="$1"
+			case "$ARG" in
+				-d)
+					DELIMITER="$2"
+					shift
+					;;
+				-n)
+					MAX_COUNT="$2"
+					shift
+					;;
+				-O)
+					ARRAY_INDEX="$2"
+					shift
+					;;
+				-s)
+					INPUT_OFFSET="$2"
+					shift
+					;;
+				-t)
+					TRIM_EOL=yes
+					;;
+				-u)
+					FD="$2"
+					shift
+					;;
+				-C)
+					CALLBACK="$2"
+					shift
+					;;
+				-c)
+					QUANTUM="$2"
+					shift
+					;;
+				-*)
+					echo "bash: ${FUNCNAME[0]}: $ARG: invalid option" >&2
+					return 2
+					;;
+				*)
+					ARRAY_NAME="$ARG"
+					;;
+			esac
+			shift
+		done
+		if [ -z "${ARRAY_INDEX:-}" ]; then
+			eval "$ARRAY_NAME=()"
+			ARRAY_INDEX=0
+		fi
+
+		local COUNTER=0
+		while true; do
+			local LINE
+			if ! IFS= read -d "$DELIMITER" -r -u "$FD" LINE; then
+				[ -n "${LINE:-}" ] || break
+				TRIM_EOL=yes # 最終行に改行がないケース
+			fi
+
+			COUNTER=$((COUNTER + 1))
+			# skip until INPUT_OFFSET
+			((INPUT_OFFSET == 0 || INPUT_OFFSET < COUNTER)) || continue
+
+			# exec the callback by quantum
+			if [ -n "${CALLBACK:-}" ] && ((COUNTER % QUANTUM == 0)); then
+				eval "$CALLBACK" "$ARRAY_INDEX" "$LINE"
+			fi
+			if [ "${TRIM_EOL:-}" = yes ]; then
+				eval "${ARRAY_NAME}[$ARRAY_INDEX]='$LINE'"
+			else
+				eval "${ARRAY_NAME}[$ARRAY_INDEX]='$LINE'$'\n'"
+			fi
+			ARRAY_INDEX=$((ARRAY_INDEX + 1))
+
+			# abort if reach limit
+			((MAX_COUNT == 0 || COUNTER < MAX_COUNT)) || break
+		done
+		# XXX: needs? eval export "$ARRAY_NAME"
+	}
+	alias mapfile='readarray'
+fi
+
+function stdin-is-tty() {
+	is-tty stdin
+}
+
+function stdout-is-tty() {
+	is-tty stdout || return 255
+	[ -p /dev/stdout ] && return 255 # XXX: VAL="$(cmd)" 形式の場合にis-ttyがtrueを返すのでパイプかどうか確認
+
+	return 0
+}
+
+function has-stdin-data() {
+	[ -p /dev/stdin ] && return 0 # pipe
+	[ -s /dev/stdin ] && return 0 # here document
+
+	return 255
+}
+alias stdin-has-data='has-stdin-data'
+
+function is-tty() {
+	local FD
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			[0-9]*)
+				FD="$ARG"
+				;;
+			/dev/stdin|stdin|input|in)
+				FD=0
+				;;
+			/dev/stdout|stdout|output|out)
+				FD=1
+				;;
+			/dev/stderr|stderr|error|err)
+				FD=2
+				;;
+			*)
+				error "unsupported file descriptor"
+				return 255
+				;;
+		esac
+		shift
+	done
+
+	[ -t "$FD" ]
+}
+
+function bash-escape() {
+	local VAL
+	# NOTE: '' をそのまま扱いたいので、${@:+"$@"} や "${@:-}" を使わない
+	for VAL in "$@"; do
+		printf -- "%q\n" "$VAL"
+	done
+}
+
+function escape-regexp() {
+	local PATTERN
+	local STDIN=yes
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			--no-stdin|--without-stdin)
+				STDIN=no
+				;;
+			-)
+				STDIN=yes
+				;;
+			*)
+				PATTERN="$ARG"
+				STDIN=no
+				;;
+		esac
+		shift
+	done
+	if [ -z "${PATTERN:-}" ]; then
+		[ "$STDIN" = yes ] || return 0
+
+		PATTERN="$(command cat -)"
+	fi
+
+	command sed -r \
+		-e 's@\\@\\\\@g' \
+		-e 's@\/@\\/@g' \
+		-e 's@\*@\\*@g' \
+		-e 's@\+@\\+@g' \
+		-e 's@\.@\\.@g' \
+		-e 's@\?@\\?@g' \
+		-e 's@\{@\\{@g' \
+		-e 's@\}@\\}@g' \
+		-e 's@\(@\\(@g' \
+		-e 's@\)@\\)@g' \
+		-e 's@\[@\\[@g' \
+		-e 's@\]@\\]@g' \
+		-e 's@\^@\\^@g' \
+		-e 's@\-@\\-@g' \
+		-e 's@\|@\\|@g' \
+		-e 's@\$@\\$@g' <<< "$PATTERN"
+}
+
+function escape-glob() {
+	local PATTERN
+	if [ -n "${1:-}" ]; then
+		PATTERN="${1:-}"
+	else
+		PATTERN="$(command cat -)"
+	fi
+
+	command sed -r \
+		-e 's@\\@\\\\@g' \
+		-e 's@\/@\\/@g' \
+		-e 's@\+@\\+@g' \
+		-e 's@\.@\\.@g' \
+		-e 's@\{@\\{@g' \
+		-e 's@\}@\\}@g' \
+		-e 's@\^@\\^@g' \
+		-e 's@\-@\\-@g' \
+		-e 's@\|@\\|@g' \
+		-e 's@\$@\\$@g' \
+		-e 's@\*@.*@g' <<< "$PATTERN"
+}
+
+function reload() {
+	case "${1:-}" in
+		-x|--debug)
+			trap 'trap - RETURN INT; set +o xtrace' RETURN INT
+			set -o xtrace
+			shift
+			;;
+	esac
+	local RCFILE
+	RCFILE="$(command ps --no-header -p $$ -ocmd | sed -n -r '/.* +--(rcfile|init-file) +([^ ]+).*/s//\2/p')"
+	RCFILE="${RCFILE:-$HOME/.bashrc}"
+
+	include "$RCFILE"
+}
+alias r='reload'
+
+# debugging utilitiy
+function xtrace() {
+	local XTRACED=no
+	if [ -o xtrace ]; then
+		XTRACED=yes
+	fi
+	case "${1:-}" in
+		-x|--debug)
+			set -o xtrace
+			shift
+			;;
+	esac
+	case "${1:-}" in
+		start|+|on|yes|enable|1)
+			set -- set -o xtrace
+			;;
+		stop|-|off|no|disable|0)
+			set -- set +o xtrace
+			;;
+		toggle|switch|reverse|"")
+			if [ "${XTRACED:-}" = yes ]; then
+				set -- set +o xtrace
+			else
+				set -- set -o xtrace
+			fi
+			;;
+	esac
+
+	local CMDS=()
+	read -r -a CMDS < <(array-escape "$@")
+	if [ "${CMDS[0]:-}" != set ]; then
+		trap 'trap - RETURN INT; set +o xtrace' RETURN INT
+		set -o xtrace
+		local CMDPATH
+		CMDPATH="$(command type -p "${CMDS[0]:-}")"
+		if [ -f "${CMDPATH:-}" ]; then
+			if [ "$(file --dereference --mime-type --brief "$CMDPATH")" = "text/x-shellscript" ]; then
+				CMDS=(bash -x "$CMDPATH" "${CMDS[@]:1}")
+			fi
+		fi
+	fi
+	eval "${CMDS[@]}"
+}
+alias x='xtrace'
+
+function _xtrace() {
+	local cur words
+	_init_completion -s || return
+
+	local cmd completer
+	cmd="${words[1]}"
+	case "$cmd" in
+		"$cur"|"")
+			readarray -t COMPREPLY < <(compgen -ac -- "$cur")
+			return
+			;;
+		*)
+			completer="$(complete-function "$cmd")"
+			if executable "${completer:-}"; then
+				"$completer" "$@"
+			fi
+			;;
+	esac
+}
+complete -o bashdefault -F _xtrace x xtrace
+
+function type() {
+	local ARGS=()
+	local CMDS=()
+	local DEREFERENCE=no
+	local FUNCTION=no
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			# original options
+			-[afpPt])
+				ARGS+=("$ARG")
+				;;
+			-[[:alnum:]][[:alnum:]]*)
+				readarray -t NEWARGS < <(echo -n "${ARG#-}" | sed -rn 's/(.)/-\1\n/gp')
+				set -- "${NEWARGS[@]}" "${@:2}" # shift
+				continue
+				;;
+			# custom options
+			-F|--func|--function)
+				FUNCTION=yes
+				;;
+			-r|-D|--dereference)
+				DEREFERENCE=yes
+				;;
+			*)
+				CMDS+=("$ARG")
+				;;
+		esac
+		shift
+	done
+	local RESULT
+	if [ "${FUNCTION:-}" = yes ]; then
+		RESULT="$(LC_ALL=C command declare -f ${CMDS[@]:+"${CMDS[@]}"})"
+	else
+		RESULT="$(LC_ALL=C command type ${ARGS[@]:+"${ARGS[@]}"} ${CMDS[@]:+"${CMDS[@]}"})"
+	fi
+	[ -n "${RESULT:-}" ] || return
+
+	if [ "${#CMDS[@]}" = 1 ]; then
+		local CMD="${CMDS[0]}"
+
+		# エイリアスの場合はデリファレンス
+		if [[ "$(alias "$CMD" 2>/dev/null)" =~ ^alias[[:space:]]$CMD=\'(.*)\'$ ]]; then
+			if [ "${DEREFERENCE:-}" = yes ]; then
+				read -r -a CMDS <<< "${BASH_REMATCH[1]}"
+				CMD="${CMDS[0]}"
+				RESULT="$(type --dereference ${ARGS[@]:+"${ARGS[@]}"} "$CMD")"
+				[ -n "${RESULT:-}" ] || return
+			fi
+		fi
+
+		# コマンドの場合はクリップボードにコピー
+		local CMDPATH
+		CMDPATH="$(command type -P "$CMD")"
+		if [ -n "${CMDPATH:-}" ]; then
+			cbcopy "$CMDPATH"
+		fi
+	fi
+	echo "$RESULT"
+}
+alias t='type'
+
+# Usage: $FUNCNAME SRC_FUNCNAME DST_FUNCNAME
+function function-copy() {
+	local SRC="${1:?error: Usage: ${FUNCNAME[0]} SRC_FUNCNAME DST_FUNCNAME}"
+	local DST="${2:?error: Usage: ${FUNCNAME[0]} SRC_FUNCNAME DST_FUNCNAME}"
+
+	FUNCTION="$(declare -f "$SRC")"
+	[ -n "${FUNCTION:-}" ] || return
+
+	eval "$DST${FUNCTION#$SRC}"
+}
+
+function rename-function() {
+	function-copy "$@"
+	delete-function "$1"
+}
+
+# Usage: $FUNCNAME FUNCNAME
+function delete-function() {
+	local FUNC="${1:?error: Usage: ${FUNCNAME[0]} FUNCNAME}"
+
+	declare -f "$FUNC" &>/dev/null || return 0
+
+	unset -f "$FUNC"
+}
+
+# Usage: $FUNCNAME [OPTION] FILE
+function include() {
+	local ERREXIT=no
+	local FILE
+	while [ $# != 0 ]; do
+		case "$1" in
+			-e|--errorexit)
+				ERREXIT=yes
+				;;
+			*)
+				FILE="$1"
+				;;
+		esac
+		shift
+	done
+
+	if [ ! -r "$FILE" ]; then
+		if [ "$ERREXIT" = yes ]; then
+			return 255
+		else
+			return 0
+		fi
+	fi
+
+	. "$FILE" > /dev/null
+}
+
+function log-fatal() {
+	log-error "$@"
+	exit 1
+}
+alias die='log-fatal'
+alias abort='log-fatal'
+
+function log-error() {
+	local RETVAL=$?
+	[ $RETVAL = 0 ] && RETVAL=255
+
+	log --level error "$@"
+
+	return $RETVAL
+}
+alias error='log-error'
+
+function log-warning() {
+	log --level warning "$@"
+}
+alias warning='log-warning'
+alias warn='log-warning'
+
+function log() {
+	local COLOR=yes
+	local HEADER=""
+	local LOGLEVEL=""
+	local OUTPUT
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			--header)
+				HEADER="$2"
+				shift
+				;;
+			--level)
+				LOGLEVEL="$2"
+				shift
+				;;
+			--output)
+				OUTPUT="$2"
+				shift
+				;;
+			--no-color)
+				COLOR=no
+				;;
+			--)
+				shift
+				break
+				;;
+			*)
+				break
+				;;
+		esac
+		shift
+	done
+
+	local COLORCODE=""
+	case "${LOGLEVEL:-}" in
+		info)
+			HEADER="${HEADER:-info: }"
+			OUTPUT="${OUTPUT:-/dev/stdout}"
+			;;
+		debug)
+			HEADER="${HEADER:-debug: }"
+			OUTPUT="${OUTPUT:-/dev/stdout}"
+			;;
+		error|err)
+			COLORCODE="$RED"
+			HEADER="${HEADER:-error: }"
+			OUTPUT="${OUTPUT:-/dev/stderr}"
+			;;
+		warning|warn)
+			COLORCODE="$YELLOW"
+			HEADER="${HEADER:-warn: }"
+			OUTPUT="${OUTPUT:-/dev/stderr}"
+			;;
+		"")
+			OUTPUT="${OUTPUT:-/dev/stdout}"
+			;;
+		*)
+			error "unsuppoted loglevel: '$LOGLEVEL'"
+			return 255
+			;;
+	esac
+	[ "$COLOR" = yes ] || COLORCODE=""
+
+	echo -e "${COLORCODE:-}$HEADER$*${COLORCODE:+$NORMAL}" > "$OUTPUT"
+}
+
+function caught-error() {
+	local EXITCODE=$?
+	echo "error in ${BASH_SOURCE[0]}:${BASH_LINENO[0]} ${FUNCNAME[1]}() caused by '$BASH_COMMAND' exit:$EXITCODE" >&2
+	local I=0
+	while caller $((++I)) &>/dev/null; do
+		echo -e "\t at ${BASH_SOURCE[$I+1]}:${BASH_LINENO[$I]} ${FUNCNAME[$((I+1))]}()" >&2
+	done
+	exit $EXITCODE
+}
+
+function env() {
+	local ARGS=()
+	local COMMAND
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-u|--unset|-C|--chdir|-S|--split-string)
+				ARGS+=("$ARG" "$2")
+				shift
+				;;
+			-*)
+				ARGS+=("$ARG")
+				;;
+			*=*)
+				ARGS+=("$ARG")
+				;;
+			*)
+				if command type -P "$ARG" &>/dev/null; then
+					COMMAND="$ARG"
+				fi
+				ARGS+=("$ARG")
+				;;
+		esac
+		shift
+	done
+
+	if [ -z "${COMMAND:-}" ]; then
+		local PRECMDS=(command)
+		if stdout-is-tty && executable grc; then
+			PRECMDS+=(grc --stdout --stderr --colour on)
+		fi
+		command-with-pager "${PRECMDS[@]}" "${FUNCNAME[0]}"
+	else
+		command "${FUNCNAME[0]}" ${ARGS[@]:+"${ARGS[@]}"}
+	fi
+}
+if [ "$(command-type env)" = alias ]; then
+	unalias env
+fi
+
+function kill() {
+	local CMDOPTS=()
+	local NEEDS_TARGET=yes
+	local PIDS=()
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-l|-L|--help|--version)
+				NEEDS_TARGET=no
+				CMDOPTS+=("$ARG")
+				;;
+			--list=*)
+				NEEDS_TARGET=no
+				CMDOPTS+=("$ARG")
+				;;
+			-a|--all|-p|--pid|--table|--verbose)
+				CMDOPTS+=("$ARG")
+				;;
+			-[0-9]*|-[A-Z]*) # sigspec
+				CMDOPTS+=("$ARG")
+				;;
+			%[0-9]*)         # jobspec
+				NEEDS_TARGET=no
+				CMDOPTS+=("$ARG")
+				;;
+			-s|--signal|-n|-q|--queue)
+				CMDOPTS+=("$ARG" "$2")
+				shift
+				;;
+			--)
+				NEEDS_TARGET=no
+				CMDOPTS+=("$ARG" "{$@:2}")
+				break
+				;;
+			*) # pids
+				NEEDS_TARGET=no
+				PIDS+=("$ARG")
+				;;
+		esac
+		shift
+	done
+	if [ "${NEEDS_TARGET:-}" = yes ] && executable fzf-kill; then
+		fzf-kill ${CMDOPTS[@]:+"${CMDOPTS[@]}"}
+		return
+	fi
+
+	command kill ${CMDOPTS[@]:+"${CMDOPTS[@]}"} ${PIDS[@]:+"${PIDS[@]}"}
+}

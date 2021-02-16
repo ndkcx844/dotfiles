@@ -1,0 +1,65 @@
+# -*-Shell-script-*-
+#
+# This file is not a stand-alone shell script.
+# This provides environment about terminal that source it.
+
+[ -z "${PS1:-}" ] && return
+
+# NOTE: 次の問題があるので PROMPT_COMMAND は使わない
+#       1. 元の PROMPT_COMMAND を壊してしまう
+#       2. 折り返しなどがおかしくなる
+#PROMPT_COMMAND=__prompt_command
+
+# prompt
+function prompt-text() {
+	local LASTSTATUS=$?
+	if [ -n "${SSH_CONNECTION:-}" ]; then
+		echo "(ssh)"
+	fi
+	return $LASTSTATUS
+}
+function prompt-color() {
+	local LASTSTATUS=$?
+	local COLOR
+	case "${UID:-}" in
+		0)
+			COLOR+="01;31m" # Red
+			;;
+		1000)
+			if [ -n "${SSH_CONNECTION:-}" ]; then
+				# TODO: round-robin as session
+				COLOR+="01;33m" # Yellow
+			else
+				COLOR+="01;32m" # Green
+			fi
+			;;
+		*)
+			COLOR+="01;34m" # Blue
+			;;
+	esac
+	if [ -r ~/.color/prompt ]; then
+		COLOR=$(< ~/.color/prompt)
+	fi
+	case "${HOSTNAME:-}" in
+		co*) COLOR="01;35m";;
+	esac
+	echo "$COLOR"
+	return $LASTSTATUS
+}
+function prompt-date() {
+	local LASTSTATUS=$?
+	LANG=C command date +"%F(%a)"
+	return $LASTSTATUS
+}
+function prompt-status() {
+	echo "exit:$?"
+}
+
+PS1='\[\033[$(prompt-color)\][$(prompt-date) \t \u@\h$(prompt-text) $(prompt-status) jobs:\j \w]\n\$ \[\033[0m\]'
+PS2='\[\033[36m\]>\[\033[0m\] '
+
+# 曖昧幅文字は2バイト
+export VTE_CJK_WIDTH=wide
+
+# XXX: .bash_profile setting does not work because overwritten by /etc/profile.d/custom.sh
+export PROMPT_DIRTRIM=0

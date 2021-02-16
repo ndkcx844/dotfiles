@@ -1,0 +1,419 @@
+# -*-Shell-script-*-
+#
+# This file is not a stand-alone shell script.
+# This provides functions to command that source it.
+
+function command-exec() {
+	local ARGS=()
+	local CMDS=()
+	local ECHO=no
+	local PRECMD=""
+	local BACKGROUND=no
+	local PAGER=""
+	local HISTORY=no
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			--echo|--with-echo)
+				ECHO=yes
+				;;
+			--eval|--with-eval)
+				PRECMD="eval"
+				;;
+			--command|--with-command)
+				PRECMD="command"
+				;;
+			--pager)
+				PAGER="$ARG"
+				;;
+			--with-pager)
+				PAGER="${PAGER:-less}"
+				;;
+			--history|--with-history)
+				HISTORY=yes
+				;;
+			--background)
+				BACKGROUND=yes
+				;;
+			--)
+				shift
+				break
+				;;
+			*)
+				break
+				;;
+		esac
+		shift
+	done
+	if [ "${ECHO:-}" = yes ]; then
+		echo "$*"
+	fi
+	if [ "${HISTORY:-}" = yes ]; then
+		history-append "$@"
+	fi
+	if [ "${BACKGROUND:-}" = yes ]; then
+		command-exec-background "$@"
+	else
+		${PRECMD:+"$PRECMD"} "$@"
+	fi
+}
+
+# NOTE: シンボリックリンクかつ".."を含むパスはPWDからの相対パスで扱う
+function command-without-dereference() {
+	local CMD
+	local RESOLVEOPT
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			--without-cdpath|--no-cdpath)
+				RESOLVEOPT="$ARG"
+				;;
+			--)
+				shift
+				CMD="${1:-}"
+				break
+				;;
+			*)
+				CMD="$ARG"
+				shift
+				break
+				;;
+		esac
+		shift
+	done
+	if [ -z "${CMD:-}" ]; then
+		error "Usage: ${FUNCNAME[0]} CMD [ARG]..."
+		return 255
+	fi
+
+	local ARGS=() ARG
+	for ARG in ${@:+"$@"}; do
+		# NOTE: CDPATHからも検索したいので、".."だけに限定しない
+		if [ ! -e "$ARG" ]; then
+			local P
+			P="$(path-resolve --quiet ${RESOLVEOPT:+"$RESOLVEOPT"} "$ARG")"
+			[ -n "${P:-}" ] && ARG="$P"
+		fi
+		ARGS+=("$ARG")
+	done
+
+	# NOTE: (aliasが実行されて無限ループになるのを避けるために)関数を実行したいのでevalはしない
+	"$CMD" ${ARGS[@]:+"${ARGS[@]}"}
+}
+
+function command-with-pager() {
+	local CMDS=()
+	local PAGER="${PAGER:-less}"
+	local PRECMD="" # NOTE: aliasが実行されて無限ループになるのを避けるためにevalはデフォルト無効
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			--pager)
+				PAGER="$2"
+				shift
+				;;
+			--pager=*)
+				PAGER="${ARG#*=}"
+				;;
+			--no-pager)
+				PAGER=""
+				;;
+			--eval|--with-eval)
+				PRECMD="eval"
+				;;
+			--command|--with-command)
+				PRECMD="command"
+				;;
+			--)
+				CMDS+=("${@:2}")
+				break
+				;;
+			*)
+				CMDS+=("$ARG")
+				;;
+		esac
+		shift
+	done
+	if [ "${#CMDS[@]}" = 0 ]; then
+		error "missing COMMAND operand"
+		return 255
+	fi
+	if ! stdout-is-tty; then
+		PAGER=""
+	fi
+
+	if [ -n "${PAGER:-}" ]; then
+		${PRECMD:+"$PRECMD"} "${CMDS[@]}" | command "$PAGER"
+	else
+		${PRECMD:+"$PRECMD"} "${CMDS[@]}"
+	fi
+}
+
+function command-options() {
+	local LONGOPTS SHORTOPTS COMMANDS
+	local ONELINE=no
+	local INPUT
+	local ALL=no
+	while [ $# != 0 ]; do
+		case "$1" in
+			-a|--all)
+				ALL=yes
+				;;
+			-c|--command|--commands|--subcommands)
+				COMMANDS=yes
+				;;
+			-o|--options)
+				LONGOPTS=yes
+				SHORTOPTS=yes
+				;;
+			--only-long|--only-short|--only-command)
+				# TODO
+				;;
+			-l|--long|--long-option)
+				LONGOPTS=yes
+				;;
+			-s|--short|--short-option)
+				SHORTOPTS=yes
+				;;
+			-1|--oneline)
+				ONELINE=yes
+				;;
+			-)
+				INPUT="$(</dev/stdin)"
+				;;
+			--)
+				shift
+				break
+				;;
+			-*)
+				echo "error: unsupported option: '$1'" >&2
+				return 255
+				;;
+			*)
+				break
+				;;
+		esac
+		shift
+	done
+	if [ -p /dev/stdin ] || [ -s /dev/stdin ]; then
+		INPUT="$(</dev/stdin)"
+	fi
+
+	local CMD=()
+	if [ -z "${INPUT:-}" ]; then
+		CMD=("${@?error: Usage: ${FUNCNAME[0]} [OPTION] COMMAND...}")
+	fi
+	if [ -z "${LONGOPTS:-}" ] && [ -z "${SHORTOPTS:-}" ] && [ -z "${COMMANDS:-}" ]; then
+		# all
+		LONGOPTS=yes
+		SHORTOPTS=yes
+		COMMANDS=yes
+	fi
+
+	local OPTIONS=()
+	local RESULT_GNU RESULT_POSIX RESULT_CMD
+
+	# GNU style
+	if [[ $ALL = yes || ${#OPTIONS[@]} = 0 ]] && [[ $LONGOPTS ]]; then
+		if [ -z "$INPUT" ]; then
+			if [ "${#CMD[@]}" = 1 ]; then
+				CMD+=("--help")
+			fi
+			RESULT_GNU="$(LC_ALL=C "${CMD[@]}" 2>&1 </dev/null)"
+		fi
+
+		if command grep -m1 -Eqs "^[[:space:]]+--[a-z]" <<< "${INPUT:-$RESULT_GNU}"; then
+			OPTIONS+=($(command-parse-help <<< "${INPUT:-$RESULT_GNU}"))
+		fi
+	fi
+
+	# POSIX style
+	if [[ $ALL = yes || ${#OPTIONS[@]} = 0 ]] && [[ $SHORTOPTS ]]; then
+		if [ -z "$INPUT" ]; then
+			if [ "${#CMD[@]}" = 1 ]; then
+				CMD+=("-h")
+			fi
+			RESULT_POSIX="$(LC_ALL=C "${CMD[@]}" 2>&1 </dev/null)"
+		fi
+
+		if command grep -m1 -Eqs "^[[:space:]]+-[a-z]" <<< "${INPUT:-$RESULT_POSIX}"; then
+			OPTIONS+=($(command-parse-help <<< "${INPUT:-$RESULT_POSIX}"))
+		fi
+	fi
+
+	# COMMAND style
+	if [[ $ALL = yes || ${#OPTIONS[@]} = 0 ]] && [[ $COMMANDS ]]; then
+		if [ -z "$INPUT" ]; then
+			if [ "${#CMD[@]}" = 1 ]; then
+				CMD+=("help")
+			fi
+			RESULT_CMD="$(LC_ALL=C "${CMD[@]}" 2>&1 </dev/null)"
+		fi
+
+		if command grep -m1 -Ewqi -e "^[[:space:]]*(Usage:|${CMD[0]})" -e "(command|option)s?:?[[:space:]]*$" <<< "${INPUT:-$RESULT_CMD}"; then
+			OPTIONS+=($(perl -nle 'next unless s/^[[:space:]]+('"${CMD[0]}"'[[:space:]]+)?//; print $1 if /^([[:alnum:]_-]+)\s{2,}/;' <<< "${INPUT:-$RESULT_CMD}"))
+			OPTIONS+=($(sed -r -e 1d -e '1,/^[[:space:]]*$/d' <<< "${INPUT:-$RESULT_CMD}" | perl -snle 'print if s/$cmd//g && s/^\s{2,}([\w-]+)\s.*/$1/; print if s/^\s{2,}([\w-]+)\s{2,}.*/$1/' -- -cmd="${CMD[0]}"))
+		fi
+	fi
+
+	local i
+	local -A HASH
+	local OPTS=()
+	for ((i = 0; i < ${#OPTIONS[@]}; i++)); do
+		local OPT="${OPTIONS[i]}"
+		[ -n "${OPT:-}" ] || continue
+		[ -z "${HASH[$OPT]}" ] || continue
+
+		if [ "$ONELINE" = yes ]; then
+			OPTS+=("$OPT")
+		else
+			printf -- "%s\n" "$OPT"
+		fi
+		HASH["$OPT"]="$OPT"
+	done
+	if [ "$ONELINE" = yes ]; then
+		echo-with-cbcopy "${OPTS[@]}"
+	fi
+}
+
+# FIXME: not works
+function command-parse-option-gnu() {
+	perl -nle 'next unless s/^[[:space:]]+-/-/; s/,//g; s/[[:space:]]{2,}/ /; print $1 if /^((-[[:word:]]+|--[[:word:]-]+)( -[[:word:]]+| --[[:word:]-]+)?)/'
+}
+
+# FIXME: not works
+function command-parse-option-posix() {
+	command grep -E -o "\[-[[:alnum:]]+( [[:alnum:]_-]+)?\]" | perl -nple 's/\[-([[:alnum:]]+)( [[:alnum:]_-]+)?\]/$1/g; s/([[:alnum:]])/  -$1\n/g;' | perl -nle 'next unless s/^[[:space:]]+-/-/; s/,//g; s/[[:space:]]{2,}/ /; print $1 if /^((-[[:word:]]+|--[[:word:]-]+)( -[[:word:]]+| --[[:word:]-]+)?)/'
+}
+
+# FIXME: not works
+function command-parse-option-command() {
+	perl -nle 'next unless s/^[[:space:]]+('"${CMD[0]}"'[[:space:]]+)?//; print $1 if /^([[:alnum:]_-]+)\s{2,}/;' <<< "${USAGE[@]}"
+	LANG=C "${CMD[0]}" help 2>&1 | sed -r -e 1d -e '1,/^[[:space:]]*$/d' | perl -snle 'print if s/$cmd//g && s/^\s{2,}([\w-]+)\s.*/$1/; print if s/^\s{2,}([\w-]+)\s{2,}.*/$1/' -- -cmd="${CMD[0]}"
+}
+
+function command-parse-help() {
+	local OPTS=() OPT
+	while IFS=$'\n'",/|" read -r -a OPTS; do
+		for OPT in "${OPTS[@]}"; do
+			__parse_options "$OPT"
+		done
+	done | command sort --uniq
+}
+
+# TODO: rename to command-exec-background
+function exec-background() {
+	"$@" &
+	local JOBID
+	JOBID="$(lastjobid)"
+	[ -n "${JOBID:-}" ] && disown %"$JOBID"
+}
+alias command-exec-background='exec-background'
+
+# TODO: rename to command-executable
+# Usage: $FUNCNAME [OPTION...] TARGET
+function executable() {
+	local TARGET
+	local VERBOSE=no
+	local FILTER="@TARGET@ is"
+	while [ $# != 0 ]; do
+		case "$1" in
+			-f|--function)
+				FILTER="@TARGET@ is a function"
+				;;
+			-a|--alias)
+				FILTER="@TARGET@ is aliased"
+				;;
+			-e|--file|-c|--command)
+				FILTER="/@TARGET@"
+				;;
+			-b|--builtin)
+				FILTER="@TARGET@ is a shell builtin"
+				;;
+			-t|--type)
+				VERBOSE="type"
+				;;
+			-v|--verbose)
+				VERBOSE=all
+				;;
+			*)
+				if [ -n "${TARGET:-}" ]; then
+					error "garbage argument: $1"
+					return 255
+				fi
+				TARGET="$1"
+				;;
+		esac
+		shift
+	done
+	if [ -z "${TARGET:-}" ]; then
+		[ "$VERBOSE" = all ] && error "missing TARGET operand"
+		return 255
+	fi
+	FILTER="${FILTER//@TARGET@/$TARGET}"
+
+	local TYPE
+	TYPE="$(LC_ALL=C command type -a "$TARGET" 2>/dev/null | command grep -E "\b$FILTER\b")"
+	if [ -n "${TYPE:-}" ] && [ "$VERBOSE" != no ]; then
+		echo "$TYPE"
+	fi
+	[ -n "${TYPE:-}" ]
+}
+alias has='executable'
+
+function command-type() {
+	command type -t "$@"
+}
+
+function command-path() {
+	command type -P "$@"
+}
+
+function command-split-option() {
+	local ARG="${1:?error: missing operand}"
+	echo -n "${ARG#-}" | command sed -rn 's/(.)/-\1\n/gp'
+}
+
+# Usage: $FUNCNAME LOWER_VERSION
+# Usage: $FUNCNAME -v LOWER_VERSION COMMAND...
+function command-version-is-newer() {
+	local LOWER_VERSION
+	local CMDS=()
+	local ARGS=()
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-v|--version)
+				LOWER_VERSION="$2"
+				shift
+				;;
+			--)
+				CMDS=("${@:2}")
+				break
+				;;
+			*)
+				ARGS=("$@")
+				break
+				;;
+		esac
+		shift
+	done
+	if [ -z "${LOWER_VERSION:-}" ]; then
+		LOWER_VERSION="${ARGS[0]:-}"
+		ARGS=("${ARGS[@]:1}")
+	fi
+	if [ -z "${LOWER_VERSION:-}" ]; then
+		error "needs LOWER_VERSION"
+		return 255
+	fi
+	if [ "${#CMDS[@]}" = 0 ]; then
+		if [ "${#ARGS[@]}" = 0 ]; then
+			CMDS=(command cat -)
+		else
+			CMDS=("${ARGS[@]}")
+		fi
+	fi
+	"${CMDS[@]}" |
+		command grep -m1 -Ew -o "[0-9]+\.[0-9]+(\.[0-9]+)?" |
+		command awk -v V="$LOWER_VERSION" '{split(V, arr, "."); V = sprintf("%02d%02d%02d", arr[1],arr[2],arr[3]); split($0, arr, "."); v = sprintf("%02d%02d%02d", arr[1],arr[2],arr[3]); exit V < v ? 0 : 1}'
+}

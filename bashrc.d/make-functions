@@ -1,0 +1,44 @@
+# -*-Shell-script-*-
+#
+# This file is not a stand-alone shell script.
+# This provides functions to make that source it.
+
+# aliases
+alias meak='make'
+alias maek='make'
+alias bbmake7='bbmake -7'
+alias bbamke='bbmake'
+alias m='make'
+alias b='bbmake'
+
+function make() {
+	# NOTE: $CDPATH effects other scripts...
+	command env CDPATH="" make "$@"
+}
+
+if [ -n "${PS1:-}" ] && include /usr/share/bash-completion/completions/make && ! executable -f _make_org; then
+	function-copy _make _make_org
+fi
+function _make() {
+	# invoke original function
+	# NOTE: _make_org uses $1 to acquire make target
+	_make_org "make" "${@:1}"
+
+	# save orignal result
+	local compreply=("${COMPREPLY[@]}")
+
+	local cur words
+	_init_completion || return
+
+	# restore orignal result
+	COMPREPLY=("${compreply[@]}")
+
+	if [[ "${words[*]}" =~ (^|[[:space:]])test($|[[:space:]]) ]]; then
+		COMPREPLY+=($(compgen -f -- "$cur"))
+		compopt -o filenames
+	fi
+	if [[ "$1" == bb* ]]; then
+		COMPREPLY+=($(compgen -W "--verbose" -- "$cur"))
+	fi
+}
+complete -o bashdefault -F _make make maek meak bbmake bbmake7 bbmaek bbmeak m b

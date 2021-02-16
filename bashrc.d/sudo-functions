@@ -1,0 +1,482 @@
+# -*- shell-script -*-
+# This file is not a stand-alone shell script.
+# This provides aliases that source it.
+
+function sudo-apply-alias() {
+	local CMDS=("$@")
+
+	local COLORIZER=colourify
+	if executable "$COLORIZER"; then
+		if [ "$(command-type "$COLORIZER")" = alias ]; then
+			eval local "$(command alias "$COLORIZER" | command cut -d' ' -f2-)"
+		else
+			eval "$COLORIZER=$COLORIZER"
+		fi
+	fi
+	local CMD
+	for CMD in ${CMDS[@]:+"${CMDS[@]}"}; do
+		local PRECMD=""
+		if [ -n "${COLORIZER:-}" ]; then
+			if command alias "$CMD" 2>/dev/null | command grep -Fq "='$COLORIZER "; then
+				PRECMD="${!COLORIZER}"
+			fi
+		fi
+		eval alias "$CMD='sudo ${PRECMD:+$PRECMD }$CMD'"
+	done
+}
+
+SUDO_CMDS=(
+	iptables-save
+	iptables
+	ip6tables-save
+	ip6tables
+	firewall-cmd
+	sysctl
+	modprobe
+	ltrace
+	strace
+	yum
+	dnf
+	docker
+	tcpdump
+	ifconfig
+	ip
+	ifup
+	ifdown
+	mount
+	umount
+	journalctl
+	service
+	du
+	fdisk
+	virt-manager
+	chmod
+	chown
+	find
+	stat
+	netstat
+	head
+	tail
+)
+sudo-apply-alias "${SUDO_CMDS[@]}"
+
+# XXX: for compatibility with Cent5
+SUDO_SUPPORT_PRESERVE_ENV="$(LANG=C command sudo -V | command awk -v V=1.7 '$2 == "version" {v = gensub(/^([0-9]+\.[0-9]+)\..*/, "\\1", 1, $3); print v < V? "no" : "yes"; exit}')"
+
+# NOTE: some aliases use sudo command as root user, we wrapp it.
+function sudo() {
+	if [ "${UID:-}" = 0 ]; then
+		command env "${@:-${FUNCNAME[0]} --help}"
+	else
+		case "${1:-}" in
+			-h|-K|-k|-V)
+				command sudo "$@"
+				;;
+			*)
+				if [ "${SUDO_SUPPORT_PRESERVE_ENV:-}" = yes ]; then
+					# NOTE: keeps user's environment
+					command sudo -E PATH="$PATH" HOME="$HOME" "$@"
+				else
+					# NOTE: supports ENV=xxx command style
+					command sudo bash -c "$(array-escape "$@")"
+				fi
+				;;
+		esac
+	fi
+}
+
+function systemctl() {
+	local OPTS=()
+	local ACTION
+	local UNITS
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-*)
+				OPTS+=("$ARG")
+				;;
+			*)
+				if [ -z "${ACTION:-}" ]; then
+					ACTION="$ARG"
+				else
+					UNITS+=("$ARG")
+				fi
+				;;
+		esac
+		shift
+	done
+	local ACTIONS=(add-requires daemon-reload get-default is-failed list-machines preset-all revert stop add-wants default halt is-system-running list-sockets reboot set-default suspend cancel disable help isolate list-timers reenable set-environment suspend-then-hibernate cat edit hibernate kexec list-unit-files reload set-property switch-root condreload emergency hybrid-sleep kill list-units reload-or-restart show try-reload-or-restart condrestart enable import-environment link mask rescue show-environment try-restart condstop exit is-active list-dependencies poweroff reset-failed start unmask daemon-reexec force-reload is-enabled list-jobs preset restart status unset-environment)
+	if [ "${#UNITS[@]}" = 1 ] && [[ "${ACTIONS[*]}" =~ (^|[$IFS])${UNITS[0]}($|[$IFS]) ]]; then
+		# for compatibility with 'service' command
+		local UNIT="$ACTION"
+		ACTION="${UNITS[0]}"
+		UNITS=("$UNIT")
+	fi
+
+	sudo ${SYSTEMD_EDITOR:+"SYSTEMD_EDITOR=$SYSTEMD_EDITOR"} ${SYSTEMD_LESS:+"SYSTEMD_LESS:+=$SYSTEMD_LESS"} "systemctl" ${OPTS[@]:+"${OPTS[@]}"} ${ACTION:+"$ACTION"} ${UNITS[@]:+"${UNITS[@]}"}
+}
+export SYSTEMD_EDITOR="$EDITOR"
+export SYSTEMD_LESS="$LESS"
+
+function grub-update-config() {
+	if [ -d /sys/firmware/efi ]; then
+		if [ ! -r /etc/os-release ]; then
+			error "failed to read /etc/os-release"
+			return 255
+		fi
+
+		local OS
+		OS="$(dequote "$(command sed -r -n '/^ID=/{s///p;q}' /etc/os-release)")"
+		if [ -z "${OS:-}" ]; then
+			error "failed to get os"
+			return 255
+		fi
+
+		sudo grub2-mkconfig -o /boot/efi/EFI/"$OS"/grub.cfg
+	else
+		sudo grub2-mkconfig -o /boot/grub/grub.conf
+	fi
+}
+alias update-grub='grub-update-config'
+
+# NOTE: "--ctime" option is enabled by default unless timestamp format was specified.
+function dmesg() {
+	local PAGER="${PAGER:-less}"
+	local ARGS=()
+	local FORMATOPT
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-F|--file|-f|--facility|-l|--level|-n|--console-level|-s|--buffer-size)
+				ARGS+=("$ARG" "$2")
+				shift
+				;;
+			-d|--show-delta|-e|--reltime|-T|--ctime|-t|--notime)
+				FORMATOPT="$ARG"
+				;;
+			--time-format)
+				ARGS+=("$ARG" "$2")
+				FORMATOPT="$2"
+				shift
+				;;
+			--time-format=*)
+				ARGS+=("$ARG")
+				FORMATOPT="${ARG#*=}"
+				;;
+			--pager)
+				PAGER="$2"
+				shift
+				;;
+			--pager=*)
+				PAGER="${ARG#*=}"
+				;;
+			--no-pager)
+				PAGER=""
+				;;
+			-*)
+				ARGS+=("$ARG")
+				;;
+			*)
+				ARGS+=("$ARG")
+				;;
+		esac
+		shift
+	done
+	if [ -z "${FORMATOPT:-}" ]; then
+		# NOTE: Cent5のdmesgはオプションを受け付けない
+		if dmesg --version &>/dev/null; then
+			ARGS+=(--ctime)
+		fi
+	fi
+
+	if [ -n "${PAGER:-}" ]; then
+		local PRECMDS=(command)
+		executable unbuffer && PRECMDS+=(unbuffer)
+		command-with-pager --pager="$PAGER" "${PRECMDS[@]}" "${FUNCNAME[0]}" ${ARGS[@]:+"${ARGS[@]}"}
+	else
+		command "${FUNCNAME[0]}" ${ARGS[@]:+"${ARGS[@]}"}
+	fi
+}
+
+function rpm() {
+	local RPMCMDS=(sudo rpm)
+	local CMDOPTS=()
+	local MODE=unknown
+	local QUERY=""
+	local CLIP=no
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-V|--verify)
+				MODE=verify
+				CMDOPTS+=("$ARG")
+				;;
+			--install)
+				MODE=install
+				CMDOPTS+=("$ARG")
+				;;
+			-U|--upgrade)
+				MODE=upgrade
+				CMDOPTS+=("$ARG")
+				;;
+			-e|--erase)
+				MODE=erase
+				CMDOPTS+=("$ARG")
+				;;
+			-q|--query)
+				MODE=query
+				CMDOPTS+=("$ARG")
+				;;
+			-i)
+				if [ "${MODE:-unknown}" = unknown ]; then
+					MODE=install
+				elif [ "${MODE:-}" = query ]; then
+					CLIP=yes
+				fi
+				CMDOPTS+=("$ARG")
+				;;
+			-f|--file)
+				if [ "${MODE:-}" = query ]; then
+					CLIP=yes
+				else
+					CMDOPTS+=("$ARG")
+				fi
+				;;
+			-l|--list)
+				CMDOPTS+=("$ARG")
+				;;
+			--info)
+				if [ "${MODE:-}" = query ]; then
+					CLIP=yes
+				fi
+				CMDOPTS+=("$ARG")
+				;;
+			-[[:alnum:]][[:alnum:]]*)
+				readarray -t NEWARGS < <(echo -n "${ARG#-}" | sed -rn 's/(.)/-\1\n/gp')
+				set -- "${NEWARGS[@]}" "${@:2}" # shift
+				continue
+				;;
+			-*)
+				CMDOPTS+=("$ARG")
+				;;
+			*)
+				if [ "${MODE:-}" = query ]; then
+					QUERY="$ARG"
+				else
+					CMDOPTS+=("$ARG")
+				fi
+				;;
+		esac
+		shift
+	done
+	local RPMNAME=""
+	if [ "${MODE:-}" = query ]; then
+		# NOTE: rpm -q{,i,l}でファイル名からパッケージ名を解決
+		if [ -f "$QUERY" ]; then
+			if RPMNAME="$("${RPMCMDS[@]}" -qf "$QUERY")"; then
+				[ -n "${RPMNAME:-}" ] && QUERY="$RPMNAME"
+			fi
+		fi
+		CMDOPTS+=("$QUERY")
+	fi
+
+	local RESULT
+	RESULT="$("${RPMCMDS[@]}" ${CMDOPTS[@]:+"${CMDOPTS[@]}"})"
+	if [ "${RESULT:-}" ]; then
+		# NOTE: rpm -q{,i,f}でパッケージ名をcbcopy
+		if [ "${CLIP:-}" = yes ] && [ -n "${RPMNAME:-}" ]; then
+			cbcopy "$RPMNAME"
+		fi
+		echo "$RESULT"
+	fi
+}
+
+# Usage: $FUNCNAME [OPTION...] -- ORGCMDS...
+function sudo-wrap-cmdline() {
+	local EXTGLOB=""
+	local CONDFLAG="-r"
+	local ONELINE=no
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			--oneline)
+				ONELINE=yes
+				;;
+			-t|--test|--condition)
+				CONDFLAG="$2"
+				shift
+				;;
+			--test=*|--condition=*)
+				CONDFLAG="${ARG#*=}"
+				;;
+			-p|--pattern|--extglob)
+				EXTGLOB="$2"
+				shift
+				;;
+			--pattern=*)
+				EXTGLOB="${ARG#*=}"
+				;;
+			--)
+				shift
+				break
+				;;
+			*)
+				break
+				;;
+		esac
+		shift
+	done
+	if [[ "$EXTGLOB" != ^\@\(*\) ]]; then
+		EXTGLOB="@($EXTGLOB)"
+	fi
+
+	local CMDS=()
+	local FILES=()
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			$EXTGLOB)
+				CMDS+=("$ARG" "$2")
+				shift
+				;;
+			--)
+				CMDS+=("$@")
+				FILES=("${@:2}")
+				break
+				;;
+			-*)
+				CMDS+=("$ARG")
+				;;
+			*)
+				CMDS+=("$ARG")
+				if [[ "$ARG" =~ ^(.+[^/]|/)/*$ ]]; then
+					FILES+=("${BASH_REMATCH[1]}")
+				fi
+				;;
+		esac
+		shift
+	done
+
+	local FILE PRECMD=""
+	for FILE in ${FILES[@]:+"${FILES[@]}"}; do
+		local _FILES=("$FILE")
+		local PARENTDIR="${FILE%/*}"/
+		if [ "$CONDFLAG" = -w ] && [ -d "$PARENTDIR" ]; then
+			# NOTE: mv,rmの場合は親ディレクトリに書き込み権限が必要なのでチェック
+			_FILES+=("${PARENTDIR%/}")
+		fi
+		local _FILE
+		for _FILE in ${_FILES[@]:+"${_FILES[@]}"}; do
+			if test -e "$_FILE"; then
+				if ! test "$CONDFLAG" "$_FILE"; then
+					PRECMD=sudo
+					break 2
+				fi
+			fi
+			if test -L "$_FILE"; then
+				if readlink --canonicalize-existing "$_FILE" &>/dev/null; then
+					if ! test "$CONDFLAG" "$_FILE"; then
+						PRECMD=sudo
+						break 2
+					fi
+				else
+					# NOTE: リンク切れの場合はリンクの所有者でチェック
+					if [ "$(id -u)" != "$(stat --format=%u "$_FILE")" ]; then
+						PRECMD=sudo
+						break 2
+					fi
+				fi
+			fi
+		done
+	done
+
+	if [ "${ONELINE:-}" = yes ]; then
+		echo ${PRECMD:+"$PRECMD"} ${CMDS[@]:+"${CMDS[@]}"}
+	else
+		local ARG
+		for ARG in ${PRECMD:+"$PRECMD"} ${CMDS[@]:+"${CMDS[@]}"}; do
+			echo "$ARG"
+		done
+	fi
+}
+
+function pkill() {
+	local CMDOPTS=()
+	local TARGETS=()
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-s|--signal|-g|--pgroup|-G|--group|--nslist|--ns|-L|--logpidfile|-F|--pidfile|-U|--uid|-u|--euid|-t|--terminal|-P|--parent|--session)
+				CMDOPTS+=("$ARG" "$2")
+				shift
+				;;
+			-*)
+				CMDOPTS+=("$ARG")
+				;;
+			*)
+				TARGETS+=("$ARG")
+				;;
+		esac
+		shift
+	done
+
+	sudo "${FUNCNAME[0]}" ${CMDOPTS[@]:+"${CMDOPTS[@]}"} ${TARGETS[@]:+"${TARGETS[@]}"}
+}
+
+function kill() {
+	local CMDOPTS=()
+	local TARGETS=()
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-s|--signal|-n)
+				CMDOPTS+=("$ARG" "$2")
+				shift
+				;;
+			-*)
+				CMDOPTS+=("$ARG")
+				;;
+			*)
+				if [[ "$ARG" =~ [^0-9]+ ]]; then
+					# NOTE: convert name -> pid
+					local PID
+					PID="$(ps --no-header -o cmd -C "$ARG" 2>/dev/null)"
+					ARG="${PID:-$ARG}"
+				fi
+				TARGETS+=("$ARG")
+				;;
+		esac
+		shift
+	done
+
+	sudo "${FUNCNAME[0]}" ${CMDOPTS[@]:+"${CMDOPTS[@]}"} ${TARGETS[@]:+"${TARGETS[@]}"}
+}
+
+function killall() {
+	local CMDOPTS=()
+	local TARGETS=()
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-s|--signal|-z|--context|-u|--user|-n|--ns|-y|--younger-than|-o|--older-than)
+				CMDOPTS+=("$ARG" "$2")
+				shift
+				;;
+			-*)
+				CMDOPTS+=("$ARG")
+				;;
+			*)
+				if [[ "$ARG" =~ ^[0-9]+$ ]]; then
+					# NOTE: convert pid -> name
+					local CMD
+					CMD="$(ps --no-header -o cmd -p "$ARG" 2>/dev/null)"
+					ARG="${CMD:-$ARG}"
+				fi
+				TARGETS+=("$ARG")
+				;;
+		esac
+		shift
+	done
+
+	sudo "${FUNCNAME[0]}" ${CMDOPTS[@]:+"${CMDOPTS[@]}"} ${TARGETS[@]:+"${TARGETS[@]}"}
+}

@@ -1,0 +1,1062 @@
+# -*-Shell-script-*-
+#
+# This file is not a stand-alone shell script.
+# This provides functions to grep that source it.
+
+# aliases
+alias tabgrep='command grep $'\''\t'\'' -r'
+
+# environments
+# TODO: 色の定義を変数化
+
+# FIXME: ignore="*.d" exclude directory also such as conf.d... X(
+GREP_DEFAULT_OPTS=("--no-message" "--binary-files=without-match" "--color=auto" "--exclude=*~" "--exclude=.*" "--exclude=#*" "--exclude=*.svg" "--exclude=GPATH" "--exclude=GRTAGS" "--exclude=GTAGS")
+if command grep --version | command grep -o -m1 -Ew "[0-9]+.[0-9]+.[0-9]+" | command awk -F. -v V=20501 '{v = sprintf("%d%02d%02d", $1, $2, $3); exit V < int(v)? 0 : 1;}'; then
+	GREP_DEFAULT_OPTS+=("--exclude-dir=_work" "--exclude-dir=site-perl" "--exclude-dir=semanticdb" "--exclude-dir=BUILD" "--exclude-dir=.bzr" "--exclude-dir=CVS" "--exclude-dir=__TO_BZR__" "--exclude-dir=__OBSOLETED__" "--exclude-dir=__OBSOLETE__" "--exclude-dir=__BROKEN__" "--exclude-dir=__TO_IPV6__" "--exclude-dir=branches")
+fi
+
+# FIXME: --file-search-regex "^.*(?<!\.d)$" not works for workaround... X(
+AG_DEFAULT_OPTS=("--pager=nkf | less" --silent --nogroup --color-path "0;35" --color-line-number "0;32" --color-match "1;31" --ignore "*~" --ignore ".*" --ignore "#*" --ignore "*.svg" --ignore-dir "_work" --ignore-dir "site-perl" --ignore-dir "site-lisp" --ignore-dir "semanticdb" --ignore-dir "BUILD" --ignore-dir ".bzr" --ignore-dir "CVS" --ignore-dir "__TO_BZR__" --ignore-dir "__OBSOLETED__" --ignore-dir "__OBSOLETE__" --ignore-dir "__BROKEN__" --ignore-dir "__TO_IPV6__" --ignore-dir "branches" --ignore GPATH --ignore GRTAGS --ignore GTAGS)
+
+RG_DEFAULT_OPTS=(--no-messages --no-heading --smart-case --glob "!*~" --glob "!.*" --glob "!#*" --glob "!_work/" --glob "!site-perl/" --glob "!site-lisp/" --glob "!semanticdb/" --glob "!BUILD/" --glob "!.bzr/" --glob "!CVS/" --glob "!__TO_BZR__/" --glob "!__OBSOLETED__/" --glob "!__OBSOLETE__/" --glob "!__BROKEN__/" --glob "!__TO_IPV6__/" --glob "!branches/" --glob "!GPATH" --glob "!GRTAGS" --glob "!GTAGS" "--type-not=d")
+
+# NOTE: --ignore ".*" is enabled by default
+PT_DEFAULT_OPTS=(--nogroup --color-path "0;35" --color-line-number "0;32" --color-match "1;31" --ignore "*~" --ignore "\#*" --ignore "*.svg" --ignore "_work/" --ignore "site-perl/" --ignore "site-lisp/" --ignore "semanticdb/" --ignore "BUILD/" --ignore ".bzr" --ignore "CVS/" --ignore "__TO_BZR__/" --ignore "__OBSOLETED__/" --ignore "__OBSOLETE__/" --ignore "__BROKEN__/" --ignore "__TO_IPV6__/" --ignore "branches/" --ignore GPATH --ignore GRTAGS --ignore GTAGS "--vcs-ignore=.bzrignore")
+
+# TODO: --textを--docに統一したい
+# TODO: -1をdwimにしたい(-lとの組み合わせでは--oneline、それ以外では-C1)
+
+function pt() {
+	local ARGS=(-e "${PT_DEFAULT_OPTS[@]}")
+	local PATHS=()
+	local PATTERNS=()
+	local PATTERN
+	local ONELINE=no
+	local LISTFILE=no
+	local COLOR=auto
+	local SHOWNUMBERS=no
+	local SHOWFILENAME=auto
+	local ONLYMATCHED=no
+	local FIXSTRING=no
+	local CASEMODE=smart
+	local INVERTMATCH=no
+	local MAXCOUNT
+	local FILES_WITHOUT_MATCH=no
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			# original options
+			--help|--usage)
+				command "${FUNCNAME[0]}" --help
+				return
+				;;
+			--numbers)
+				SHOWNUMBERS=yes
+				;;
+			-N|--nonumbers)
+				SHOWNUMBERS=no
+				;;
+			--nocolor)
+				COLOR=never
+				;;
+			--color-line-number|--color-match|--color-path)
+				local VAL=${ARG#--}
+				VAL="${VAL//-/_}"
+				VAL="${VAL^^}"
+				eval "$VAL='$2'"
+				shift
+				;;
+			--color-line-number=*|--color-match=*|--color-path=*)
+				local VAL=${ARG#--}
+				VAL="${VAL%=*}"
+				VAL="${VAL//-/_}"
+				VAL="${VAL^^}"
+				eval "$VAL='${ARG#*=}'"
+				;;
+			--after|--before|--context|--output-encode|--ignore|--vcs-ignore|--file-search-regexp|--depth)
+				ARGS+=("$ARG" "$2")
+				shift
+				;;
+			-A|-B|-C|-g|-G)
+				ARGS+=("$ARG" "$2")
+				shift
+				;;
+			-i|--ignore-case)
+				ARGS+=("$ARG")
+				CASEMODE=ignore
+				;;
+			-l|--files-with-matches)
+				ARGS+=("$ARG")
+				LISTFILE=yes
+				;;
+			--)
+				PATTERN="$2"
+				PATHS=("${@:3}")
+				break
+				;;
+			# custom options
+			-x)
+				trap 'trap - RETURN INT; set +o xtrace' RETURN INT
+				set -o xtrace
+				;;
+			-v|--invert-match)
+				INVERTMATCH=yes
+				;;
+			-o)
+				if [[ $2 =~ (none|jis|sjis|euc) ]]; then
+					ARGS+=("$ARG" "$2")
+					shift
+				else
+					ONLYMATCHED=yes
+				fi
+				;;
+			--only-matching)
+				ONLYMATCHED=yes
+				;;
+			-s|--case-sensitive) # for compatibility with ag/rg
+				CASEMODE=sensitive
+				;;
+			--sh|--shell)
+				ARGS+=(--file-search-regexp '/(.*\.(|z|c|k|ba|tc|fi)sh|[^.]+)$')
+				;;
+			--cc)
+				ARGS+=(--file-search-regexp '/.*\.[ch]$')
+				;;
+			--spec)
+				ARGS+=(--file-search-regexp '/.*\.spec(.in)?$')
+				;;
+			--make)
+				ARGS+=(--file-search-regexp '/[Mm]akefile$')
+				;;
+			--doc|--docs)
+				ARGS+=("--file-search-regexp=(/docs?/|/(README|TODO|BUGS)[^/]*$|(\.txt|\.md)$)")
+				;;
+			--text|-txt)
+				ARGS+=("--file-search-regexp=((README|TODO|BUGS)[^/]*$|(\.txt|\.md)$)")
+				;;
+			--no-text|--without-text)
+				ARGS+=(--ignore "*.txt" --ignore "*.md" --ignore "README*" --ignore "TODO*" --ignore "BUGS*")
+				;;
+			--no-test|--without-test)
+				ARGS+=(--ignore "test/" --ignore "t/" --ignore "T/")
+				;;
+			--color|--colour)
+				if [[ "$2" =~ ^(auto|always|force|no|none|never)$ ]]; then
+					COLOR="$2"
+					shift
+				else
+					COLOR=always
+				fi
+				;;
+			--color=*|--colour=*)
+				COLOR="${ARG#*=}"
+				;;
+			--oneline|-1)
+				ONELINE=yes
+				ARGS+=("--files-with-matches")
+				COLOR=never
+				;;
+			--include) # for compatibility with grep
+				ARGS+=(--file-search-regexp "$2")
+				shift
+				;;
+			--include=*) # for compatibility with grep
+				ARGS+=(--file-search-regexp "${ARG#*=}")
+				;;
+			--exclude) # for compatibility with grep
+				ARGS+=(--ignore "$2")
+				shift
+				;;
+			--exclude=*) # for compatibility with grep
+				ARGS+=(--ignore "${ARG#*=}")
+				;;
+			-n|--line-number) # for compatibility with grep
+				SHOWNUMBERS=yes
+				;;
+			-h|--no-filename) # for compatibility with grep
+				SHOWFILENAME=no
+				;;
+			-H|--with-filename) # for compatibility with grep
+				SHOWFILENAME=yes
+				;;
+			-L|--files-without-match) # for compatibility with grep
+				FILES_WITHOUT_MATCH=yes
+				;;
+			-m|--max-count) # for compatibility with grep
+				MAXCOUNT="$2"
+				shift
+				;;
+			-m*) # for compatibility with grep
+				MAXCOUNT="${ARG:2}"
+				;;
+			--max-count=*) # for compatibility with grep
+				MAXCOUNT="${ARG#*=}"
+				;;
+			-E|--extended-regexp) # for compatibility with grep
+				FIXSTRING=no
+				;;
+			-e|--regexp)
+				PATTERNS+=("$2")
+				shift
+				;;
+			--regexp=*)
+				PATTERNS+=("${ARG#*=}")
+				;;
+			-F|--fixed-strings)
+				FIXSTRING=yes
+				;;
+			--no-*)
+				set -- --no"${ARG#--no-}" "${@:2}" # shift
+				continue
+				;;
+			-[[:alnum:]][[:alnum:]]*)
+				readarray -t NEWARGS < <(echo -n "${ARG#-}" | sed -rn 's/(.)/-\1\n/gp')
+				set -- "${NEWARGS[@]}" "${@:2}" # shift
+				continue
+				;;
+			--*|-*)
+				ARGS+=("$ARG")
+				;;
+			*)
+				if [ -z "${PATTERN:-}" ] && [ ${#PATTERNS[@]} = 0 ]; then
+					if [ -n "${ARG:-}" ]; then
+						PATTERN="$ARG"
+					else
+						PATTERN="."
+						COLOR=never
+					fi
+				else
+					local FILE="$ARG"
+					if [ ! -e "$FILE" ]; then
+						FILE="$(path-resolve "$FILE")" # for symlink
+						if [ ! -e "$FILE" ]; then
+							error "no such file or directory: $ARG"
+							return 255
+						fi
+					fi
+					if [ -f "$FILE" ] && [ ! -r "$FILE" ]; then
+						error "${FUNCNAME[0]}: $ARG: Permission denied"
+					fi
+					PATHS+=("$FILE")
+				fi
+				;;
+		esac
+		shift
+	done
+
+	if [ ${#PATTERNS[@]} = 0 ] && [ -n "${PATTERN:-}" ]; then
+		PATTERNS=("$PATTERN")
+	fi
+
+	if [ "${SHOWNUMBERS:-}" = no ]; then
+		ARGS+=("--nonumbers")
+	fi
+
+	if [ "${CASEMODE:-}" = smart ]; then
+		ARGS+=("--smart-case")
+	fi
+
+	if [ "${FIXSTRING:-}" = yes ]; then
+		local _PATTERNS=(${PATTERNS[@]:+"${PATTERNS[@]}"})
+		PATTERNS=()
+		for PATTERN in ${_PATTERNS[@]:+"${_PATTERNS[@]}"}; do
+			PATTERNS+=("$(escape-regexp "$PATTERN")")
+		done
+	fi
+
+	case "${COLOR:-}" in
+		auto)
+			if stdout-is-tty; then
+				COLOR=always
+			else
+				COLOR=never
+			fi
+			;;
+		always|force)
+			COLOR=always
+			;;
+		no|none|never)
+			COLOR=never
+			;;
+		*)
+			error "invalid argument for --color: $COLOR"
+			return 255
+			;;
+	esac
+
+	if [ $ONELINE = yes ]; then
+		local _LINE
+		local FILES=()
+		while IFS= read -r _LINE; do
+			FILES+=("$(printf %q "$_LINE")")
+		done < <(
+			for PATTERN in "${PATTERNS[@]:-}"; do
+				command "${FUNCNAME[0]}" ${ARGS[@]:+"${ARGS[@]}"} -- ${PATTERN:+"$PATTERN"} ${PATHS[@]:+"${PATHS[@]}"}
+			done | sort --uniq
+		)
+		echo-with-cbcopy "${FILES[@]}"
+	elif [ $LISTFILE = yes ]; then
+		for PATTERN in "${PATTERNS[@]:-}"; do
+			command "${FUNCNAME[0]}" ${ARGS[@]:+"${ARGS[@]}"} -- ${PATTERN:+"$PATTERN"} ${PATHS[@]:+"${PATHS[@]}"}
+		done | sort --uniq
+	else
+		function pt-output-filter() {
+			command awk -F: '
+			BEGIN {
+			    OFS = ":"
+			    EOL = "\n"
+			}
+			function print_with_color(target, pattern, color, repeat, eol) {
+			    if (color)
+			        target = gensub(pattern, "\033[" color "m\\0\033[0m", repeat, target)
+			    printf("%s", target eol)
+			}
+			function print_header(file, line) {
+			    if (with_filename) {
+			        if (color)
+			            print_with_color(file, file, color_path, 1)
+			        else
+			            printf("%s", file)
+			        printf OFS
+			    }
+			    if (with_linenumber) {
+			        if (color)
+			            print_with_color(line, line, color_line_number, 1)
+			        else
+			            printf("%s", line)
+			        printf OFS
+			    }
+			}
+			function print_body(body, pattern) {
+			    if (color)
+			        print_with_color(body, pattern, color_match, "g", EOL)
+			    else
+			        print body
+			}
+			{
+			if (! pattern) {
+			    print
+			    next
+			}
+			file = gensub(/[/]+/, "/", "g", $1)
+			$1 = ""
+			if (with_linenumber) {
+			    line = $2
+			    $2 = ""
+			}
+			sub(/^[:]+/, "", $0)
+			if (file != last_file) {
+			    if (last_file && files_without_match && printed == 0)
+			        print_with_color(last_file, last_file, color_path, 1, EOL)
+			    printed = 0
+			    last_file = file
+			}
+
+			if (0 < max_count && max_count <= printed) {
+			    next
+			}
+
+			if (match($0, pattern, matched)) {
+			    needs_print = !invert_match;
+			} else {
+			    needs_print = invert_match;
+			}
+
+			if (needs_print) {
+			    if (files_without_match) {
+			        printed++ # just count
+			    } else if (only_matched) {
+			        for (i = 1; matched[i]; i++) {
+			            print_header(file, line)
+			            print_body(matched[i], matched[i])
+			            printed++
+			            if (0 < max_count && max_count <= printed) {
+			                break
+			            }
+			        }
+			    } else {
+			        print_header(file, line)
+			        print_body($0, pattern)
+			        printed++
+			    }
+			    needs_print = 0
+			}
+			}
+			END {
+			    if (last_file) {
+			        if (files_without_match && printed == 0)
+			            print_with_color(last_file, last_file, color_path, 1, EOL)
+			    }
+			}
+			' "$@" | \
+				command awk -F: '
+				function flush(lines, file) {
+				    for (i = 1; i <= length(lines); i++) {
+				        if (file)
+				            print file OFS lines[i]
+				        else
+				            print lines[i]
+				    }
+				    split("", lines)
+				}
+				BEGIN {
+				    OFS = ":"
+				}
+				{
+				    if (with_filename != "auto" || multi_files) {
+				        print
+				        next
+				    }
+
+				    file = $1
+				    $1 = ""
+				    sub(/^[:]+/, "", $0)
+				    if (! last_file)
+				        last_file = file
+				    if (file != last_file) {
+				        flush(lines, last_file)
+				        multi_files = 1
+				        print file OFS $0
+				    } else {
+				        lines[NR] = $0
+				    }
+				}
+				END {
+				    if (length(lines) > 0)
+				        flush(lines)
+				}
+				' "$@"
+		}
+		local FILTEROPTS=()
+		if [ "$COLOR" = always ]; then
+			FILTEROPTS+=("color=$COLOR")
+			FILTEROPTS+=("color_match=${COLOR_MATCH:-1;31}")
+			FILTEROPTS+=("color_path=${COLOR_PATH:-0;35}")
+			FILTEROPTS+=("color_line_number=${COLOR_LINE_NUMBER:-0;32}")
+		fi
+		if [ "$ONLYMATCHED" = yes ]; then
+			FILTEROPTS+=("only_matched=$ONLYMATCHED")
+		fi
+		if ((0 <= "${MAXCOUNT:--1}")); then
+			FILTEROPTS+=("max_count=$MAXCOUNT")
+		fi
+		if [ "$INVERTMATCH" = yes ]; then
+			FILTEROPTS+=("invert_match=$INVERTMATCH")
+		fi
+		if [ "$CASEMODE" = ignore ]; then
+			FILTEROPTS+=("IGNORECASE=1")
+		fi
+		if [ "$FILES_WITHOUT_MATCH" = yes ]; then
+			FILTEROPTS+=("files_without_match=$FILES_WITHOUT_MATCH")
+		fi
+		if [ "$SHOWNUMBERS" = yes ]; then
+			FILTEROPTS+=("with_linenumber=$SHOWNUMBERS")
+		fi
+		if [ "${#FILTEROPTS[@]}" != 0 ]; then
+			FILTEROPTS+=("pattern=$(IFS="|"; echo "(${PATTERNS[*]})")")
+		fi
+		if [ "$SHOWFILENAME" != no ]; then
+			FILTEROPTS+=("with_filename=$SHOWFILENAME")
+		fi
+		if [ "${INVERTMATCH:-}" = yes ] || [ "${FILES_WITHOUT_MATCH:-}" = yes ]; then
+			command "${FUNCNAME[0]}" ${ARGS[@]:+"${ARGS[@]}"} -- "" ${PATHS[@]:+"${PATHS[@]}"}
+		else
+			for PATTERN in "${PATTERNS[@]:-}"; do
+				command "${FUNCNAME[0]}" ${ARGS[@]:+"${ARGS[@]}"} -- ${PATTERN:+"$PATTERN"} ${PATHS[@]:+"${PATHS[@]}"}
+			done
+		fi | pt-output-filter "${FILTEROPTS[@]}"
+		unset -f pt-output-filter
+	fi
+}
+
+function rg() {
+	local ARGS=("${RG_DEFAULT_OPTS[@]}") # オプションで上書きできるように先頭に挿入
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			# custom options
+			-x)
+				trap 'trap - RETURN INT; set +o xtrace' RETURN INT
+				set -o xtrace
+				;;
+			-L) # NOTE: overwrite orignail option for compatibility with grep/ag
+				ARGS+=(--files-without-match)
+				;;
+			--sh|--shell)
+				ARGS+=("--glob=*.sh" "--glob=*[^.][^.][^.][^.]")
+				;;
+			--cc)
+				ARGS+=("--glob=*.[ch]")
+				;;
+			--spec)
+				ARGS+=("--glob=*.spec.in")
+				;;
+			--make)
+				ARGS+=("--glob=[Mm]akefile")
+				;;
+			--doc|--docs)
+				ARGS+=("--glob=doc/*" "--glob=docs/*")
+				ARGS+=("--glob=*.txt" "--glob=*.md" "--glob=README*" "--glob=TODO*" "--glob=BUGS*")
+				;;
+			--text|-txt)
+				ARGS+=("--glob=*.txt" "--glob=*.md" "--glob=README*" "--glob=TODO*" "--glob=BUGS*")
+				;;
+			--no-text|--without-text)
+				ARGS+=("--glob=!*.txt" "--glob=!*.md" "--glob=!README*" "--glob=!TODO*" "--glob=!BUGS*")
+				;;
+			--no-test|--without-test)
+				ARGS+=("--glob=!test/" "--glob=!tests/" "--iglob=!t/")
+				;;
+			--include)
+				ARGS+=("--glob=$2")
+				shift
+				;;
+			--include=*)
+				ARGS+=("--glob=${ARG#*=}")
+				;;
+			--exclude|--ignore)
+				ARGS+=("--glob=!$2")
+				shift
+				;;
+			--exclude=*|--ignore=*)
+				ARGS+=("--glob=${ARG#*=}")
+				;;
+			*)
+				ARGS+=("$ARG")
+				;;
+		esac
+		shift
+	done
+
+	command "${FUNCNAME[0]}" ${ARGS[@]:+"${ARGS[@]}"}
+}
+
+function ag() {
+	local ARGS=("${AG_DEFAULT_OPTS[@]}") # --noXXX で後から上書きできるように先頭に挿入
+	local PATHS=()
+	local PATTERNS=()
+	local PATTERN
+	local ONELINE=no
+	local LISTFILE=no
+	local COLOR=auto
+	local PRECOMMAND=command
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			--help|--usage)
+				command "${FUNCNAME[0]}" --help
+				return
+				;;
+			--list-file-types)
+				command "${FUNCNAME[0]}" --list-file-types
+				return
+				;;
+			-e|--regexp)
+				PATTERNS+=("$2")
+				shift
+				;;
+			--regexp=*)
+				PATTERNS+=("${ARG#*=}")
+				;;
+			-l|--files-with-matches)
+				LISTFILE=yes
+				ARGS+=("--files-with-matches")
+				;;
+			-[mpWG])
+				ARGS+=("$ARG" "$2")
+				shift
+				;;
+			-g)
+				LISTFILE=yes
+				ARGS+=("$ARG" "$2")
+				shift
+				;;
+			-[ABCmW][0-9]*)
+				ARGS+=("${ARG:0:2}" "${ARG:2}")
+				;;
+			-[ABC]|--after|--before|--context)
+				ARGS+=("$ARG")
+				if [[ "$2" =~ ^[0-9]+$ ]]; then
+					ARGS+=("$ARG" "$2")
+					shift
+				else
+					ARGS+=("$ARG" 5)
+				fi
+				;;
+			--after=*|--before=*|--context=*)
+				ARGS+=("$ARG")
+				;;
+			--pager)
+				if [ -z "${2:-}" ]; then
+					ARGS+=(--nopager)
+				else
+					ARGS+=("$ARG" "$2")
+				fi
+				shift
+				;;
+			--pager=*)
+				if [ -z "${ARG#*=}" ]; then
+					ARGS+=(--nopager)
+				else
+					ARGS+=("$ARG")
+				fi
+				;;
+			--width|--path-to-ignore|--max-count|--ignore-dir|--ignore|--depth|--filename-pattern|--file-search-regex)
+				ARGS+=("$ARG" "$2")
+				shift
+				;;
+			--width=*|--path-to-ignore=*|--max-count=*|--ignore-dir=*|--ignore=*|--depth=*|--filename-pattern=*|--file-search-regex=*)
+				ARGS+=("$ARG")
+				;;
+			--)
+				PATTERN="$(quote "$2")"
+				PATHS=("${@:3}")
+				break
+				;;
+			--ackmate|--break|--nobreak|--no-break|--count|--column|--filename|--nofilename|--no-filename|--heading|--noheading|--no-heading|--group|--nogroup|--no-group|--print-all-files|--only-matching|--print-long-lines|--numbers|--nonumbers|--no-numbers|--passthrough|--silent|--stats|--stats-only|--vimgrep|--null|--print0|--all-types|--debug|--follow|--fixed-strings|--hidden|--search-zip|--word-regexp|--invert-match|--skip-vcs-ignores|--unrestricted|--all-text|--search-binary|--smart-case|--case-sensitive|--ignore-case|--one-device|--literal|--recurse)
+				ARGS+=("$ARG")
+				;;
+			-[cHLo0aDfFQisSturUvwz])
+				ARGS+=("$ARG")
+				;;
+			# custom options
+			-x)
+				trap 'trap - RETURN INT; set +o xtrace' RETURN INT
+				set -o xtrace
+				;;
+			-h)
+				ARGS+=(--nofilename)
+				;;
+			--tab)
+				PATTERN="$'\t'"
+				;;
+			--sh|--shell)
+				ARGS+=(--file-search-regex '/(.*\.(|z|c|k|ba|tc|fi)sh|[^.]+)$')
+				;;
+			--spec)
+				ARGS+=(--file-search-regex '/.*\.spec(.in)?$')
+				;;
+			--make)
+				ARGS+=(--file-search-regex '/[Mm]akefile$')
+				;;
+			--no-text|--without-text)
+				ARGS+=(--ignore "*.txt" --ignore "README*" --ignore "TODO*" --ignore "BUGS*")
+				;;
+			--no-test|--without-test)
+				ARGS+=(--ignore-dir test --ignore-dir t --ignore-dir T)
+				;;
+			--oneline|-1)
+				ONELINE=yes
+				ARGS+=("--files-with-matches")
+				COLOR=never
+				;;
+			-[1-9]|-[0-9][0-9]*)
+				ARGS+=(-C "${ARG#-}")
+				;;
+			-R|--dereference-recursive) # for compatibility with grep
+				ARGS+=("--follow")
+				;;
+			-E|--extended-regexp) # for compatibility with grep
+				;;
+			--exclude|--exclude-dir) # for compatibility with grep
+				ARGS+=("--ignore${ARG#--exclude}" "$2")
+				shift
+				;;
+			--exclude=*|--exclude-dir=*) # for compatibility with grep
+				local PRE="${ARG%%=*}"
+				ARGS+=("--ignore${PRE#--exclude}" "${ARG#*=}")
+				;;
+			--color|--colour)
+				COLOR=always
+				;;
+			--color=*|--colour=*)
+				COLOR="${ARG#*=}"
+				;;
+			-r|--recursive)
+				# for compatibility with grep
+				;;
+			-[[:alnum:]][[:alnum:]]*)
+				readarray -t NEWARGS < <(echo -n "${ARG#-}" | sed -rn 's/(.)/-\1\n/gp')
+				set -- "${NEWARGS[@]}" "${@:2}" # shift
+				continue
+				;;
+			--no-*)
+				ARGS+=(--no"${ARG#--no-}")
+				;;
+			--*) # --cc
+				ARGS+=("$ARG")
+				;;
+			*)
+				if [ -z "${PATTERN:-}" ] && [ ${#PATTERNS[@]} = 0 ]; then
+					if [ -n "${ARG:-}" ]; then
+						PATTERN="$(quote "$ARG")" # escape for empty string ("")
+					else
+						PATTERN="$(quote ".")" # for compatibility with grep
+						COLOR=never
+					fi
+				else
+					local FILE="$ARG"
+					if [ ! -e "$FILE" ]; then
+						FILE="$(path-resolve "$FILE")" # for symlink
+						if [ ! -e "$FILE" ]; then
+							error "no such file or directory: $ARG"
+							return 255
+						fi
+					fi
+					if [ -f "$FILE" ] && [ ! -r "$FILE" ]; then
+						error "${FUNCNAME[0]}: $ARG: Permission denied"
+					fi
+					PATHS+=("$FILE")
+				fi
+				;;
+		esac
+		shift
+	done
+	if [[ $LISTFILE = no && -z "${PATTERN:-}" && ${#PATTERNS[@]} = 0 ]] || [[ -n "${PATTERN:-}" && ${#PATTERNS[@]} != 0 ]]; then
+		echo "Usage: ag [FILE-TYPE] [OPTIONS] PATTERN [PATH]" >&2
+		return 255
+	fi
+	if [ ${#PATTERNS[@]} = 0 ] && [ -n "${PATTERN:-}" ]; then
+		PATTERN="$(dequote "$PATTERN")"
+		PATTERNS=("$PATTERN")
+	fi
+	case "$COLOR" in
+		auto)
+			PRECOMMAND="command"
+			ARGS+=(--color)
+			;;
+		always|force)
+			PRECOMMAND=unbuffer
+			ARGS+=(--color)
+			;;
+		no|none|never)
+			PRECOMMAND="command"
+			ARGS+=(--nocolor)
+			;;
+		*)
+			error "invalid argument for --color: $COLOR"
+			return 255
+			;;
+	esac
+
+	if [ $ONELINE = yes ]; then
+		local _LINE
+		local FILES=()
+		while IFS= read -r _LINE; do
+			FILES+=("$(printf %q "$_LINE")")
+		done < <(
+			for PATTERN in "${PATTERNS[@]:-}"; do
+				"$PRECOMMAND" "${FUNCNAME[0]}" ${ARGS[@]:+"${ARGS[@]}"} -- ${PATTERN:+"$PATTERN"} ${PATHS[@]:+"${PATHS[@]}"}
+			done | sort --uniq
+		)
+		echo-with-cbcopy "${FILES[@]}"
+	elif [ $LISTFILE = yes ]; then
+		for PATTERN in "${PATTERNS[@]:-}"; do
+			"$PRECOMMAND" "${FUNCNAME[0]}" ${ARGS[@]:+"${ARGS[@]}"} -- ${PATTERN:+"$PATTERN"} ${PATHS[@]:+"${PATHS[@]}"}
+		done | sort --uniq
+	else
+		for PATTERN in "${PATTERNS[@]:-}"; do
+			"$PRECOMMAND" "${FUNCNAME[0]}" ${ARGS[@]:+"${ARGS[@]}"} -- ${PATTERN:+"$PATTERN"} ${PATHS[@]:+"${PATHS[@]}"}
+		done
+	fi
+}
+alias a='ag'
+alias aag='ag'
+
+function grep() {
+	local ARGS=() # NOTE: デフォルト除外リストの無効化があるので後で追加する
+	local PREARGS=()
+	local ONELINE=no
+	local PATTERN
+	local FILES=()
+	local ERRMSG=yes
+	local RECURSIVE
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-e|--regexp|-f|--file)
+				ARGS+=("$ARG" "$2")
+				PATTERN="$2"
+				shift
+				;;
+			--regexp=*|--file=*)
+				ARGS+=("$ARG")
+				PATTERN="${ARG#*=}"
+				;;
+			-[ABCDdm]|--group-separator|--context|--after-context|--before-context|--exclude-dir|--exclude-from|--exclude|--devices|--directories|--binary-files|--label|--max-count)
+				ARGS+=("$ARG" "$2")
+				shift
+				;;
+			--include)
+				# NOTE: --include は --exclude より前に指定しないと動かない
+				PREARGS+=("$ARG" "$2")
+				FILES+=("$2")
+				shift
+				;;
+			--include=*)
+				# NOTE: --include は --exclude より前に指定しないと動かない
+				PREARGS+=("$ARG")
+				FILES+=("${ARG#*=}")
+				;;
+			--color|--colour)
+				if [[ "$2" =~ ^(auto|always|no|none|never)$ ]]; then
+					ARGS+=("$ARG=$2")
+					shift
+				else
+					ARGS+=("$ARG")
+				fi
+				;;
+			-[efmdABCD][[:ascii:]]*)
+				ARGS+=("$ARG")
+				;;
+			-[[:digit:]][[:digit:]]*)
+				ARGS+=("$ARG")
+				;;
+			-[[:alnum:]][[:alnum:]]*)
+				readarray -t NEWARGS < <(echo -n "${ARG#-}" | sed -rn 's/(.)/-\1\n/gp')
+				set -- "${NEWARGS[@]}" "${@:2}" # shift
+				continue
+				;;
+			-s|--no-messages)
+				ERRMSG=no
+				ARGS+=("$ARG")
+				;;
+			# custom options
+			# XXX: -xオプションはオリジナル競合するので無効化
+			# -x)
+			# 	trap 'trap - RETURN INT; set +o xtrace' RETURN INT
+			# 	set -o xtrace
+			# 	;;
+			--tab)
+				PATTERN=$'\t'
+				ARGS+=("$PATTERN")
+				;;
+			# NOTE: --include は --exclude より前に指定しないと動かない
+			--sh|--shell)
+				PREARGS+=("--include=*.sh" "--include=*[^.][^.][^.]" "--exclude-dir=.*")
+				;;
+			--cc)
+				PREARGS+=("--include=*.[ch]" "--exclude-dir=.*")
+				;;
+			--spec)
+				PREARGS+=("--include=*.spec.in" "--exclude-dir=.*")
+				;;
+			--make)
+				PREARGS+=("--include=[Mm]akefile" "--exclude-dir=.*")
+				;;
+			--no-text|--without-text)
+				PREARGS+=(--exclude "*.txt" --exclude "README*" --exclude "TODO*" --exclude "BUGS*")
+				;;
+			--no-test|--without-test)
+				PREARGS+=(--exclude-dir test --exclude-dir t --exclude-dir T)
+				;;
+			--oneline|-1)
+				ONELINE=yes
+				ARGS+=("-l")
+				;;
+			--hidden)
+				# NOTE: デフォルトで--exclude=".*"しているため、それより後に追加
+				ARGS+=("--include=.*")
+				;;
+			--)
+				PATTERN="$2"
+				ARGS+=("$@")
+				FILES+=("${@:3}")
+				break
+				;;
+			--*|-*)
+				ARGS+=("$ARG")
+				;;
+			*)
+				if [ -z "${PATTERN:-}" ]; then
+					PATTERN="$ARG"
+					ARGS+=("$ARG")
+				else
+					local FILE
+					FILE="$(path-resolve "$ARG")" # for symlink
+					if [ "$ERRMSG" = yes ]; then
+						if [ ! -e "$FILE" ]; then
+							error "no such file or directory: $ARG"
+						fi
+						if [ -f "$FILE" ] && [ ! -r "$FILE" ]; then
+							echo "${FUNCNAME[0]}: $ARG: Permission denied" >&2
+						fi
+					fi
+					if [ -d "$FILE" ]; then
+						RECURSIVE=yes
+					elif [ -z "${RECURSIVE:-}" ]; then
+						RECURSIVE=no
+					fi
+					ARGS+=("$FILE")
+					FILES+=("$FILE")
+				fi
+				;;
+		esac
+		shift
+	done
+	# NOTE: デフォルトの除外対象を明示的に対象にしたい場合のケア
+	function grep-matches-filepath() {
+		local TARGET="${1:?error: missing TARGET operand}"
+		local FILES=("${@:2}")
+		local FILE
+		for FILE in ${FILES[@]:+"${FILES[@]}"}; do
+			[[ $TARGET == "$FILE" ]] || continue
+			return 0
+		done
+		return 255
+	}
+	local I
+	for ((I = 0; I < "${#GREP_DEFAULT_OPTS[@]}"; I++)); do
+		local OPT="${GREP_DEFAULT_OPTS[I]}"
+		case "$OPT" in
+			--exclude)
+				((I++))
+				TARGET="${GREP_DEFAULT_OPTS[I]}"
+				if [ "${#FILES[@]}" = 0 ] || ! grep-matches-filepath "*/$TARGET" "${FILES[@]}"; then
+					PREARGS+=("$OPT" "$TARGET")
+				fi
+				;;
+			--exclude=*)
+				TARGET="${OPT#*=}"
+				if [ "${#FILES[@]}" = 0 ] || ! grep-matches-filepath "*/$TARGET" "${FILES[@]}"; then
+					PREARGS+=("$OPT")
+				fi
+				;;
+			--exclude-dir)
+				((I++))
+				TARGET="${GREP_DEFAULT_OPTS[I]}"
+				if [ "${#FILES[@]}" = 0 ] || ! grep-matches-filepath "*/$TARGET?(/*)" "${FILES[@]}"; then
+					PREARGS+=("$OPT" "$TARGET")
+				fi
+				;;
+			--exclude-dir=*)
+				TARGET="${OPT#*=}"
+				if [ "${#FILES[@]}" = 0 ] || ! grep-matches-filepath "*/$TARGET?(/*)" "${FILES[@]}"; then
+					PREARGS+=("$OPT")
+				fi
+				;;
+			*)
+				PREARGS+=("$OPT")
+				;;
+		esac
+	done
+	unset -f grep-matches-filepath
+
+	if stdin-is-tty && [ "${RECURSIVE:-}" != no ]; then
+		PREARGS+=(--recursive)
+	fi
+
+	if [ "$ONELINE" = yes ]; then
+		command "${FUNCNAME[0]}" ${PREARGS[@]:+"${PREARGS[@]}"} ${ARGS[@]:+"${ARGS[@]}"} | command xargs --no-run-if-empty
+	else
+		command "${FUNCNAME[0]}" ${PREARGS[@]:+"${PREARGS[@]}"} ${ARGS[@]:+"${ARGS[@]}"}
+	fi
+}
+alias g='grep'
+alias grpe='grep'
+alias gerp='grep'
+
+function gre() {
+	[ "$1" = p ] && shift
+	grep "$@"
+}
+
+function _pt() {
+	local cur
+	_init_completion || return
+
+	if [[ "$cur" == -* ]]; then
+		# オプションの補完
+		local cmdopts=(--after --before --color --color-line-number --color-match --color-path --column --context --count --depth --file-search-regexp --files-with-matches --follow --global-gitignore --group --help --hidden --home-ptignore --ignore-case --ignore --nocolor --nogroup --nonumbers --null --numbers --output-encode --skip-vcs-ignores --smart-case --vcs-ignore --version --word-regexp -0 -A -B -C -G -N -S -U -c -e -f -g -h -i -l -o -w)
+		readarray -t -O "${#COMPREPLY[@]}" COMPREPLY < <(compgen -W "${cmdopts[*]}" -- "$cur")
+		local extopts=(-x --sh --shell --cc --spec --make --doc --text --no-text --no-test --include --exclude)
+		readarray -t -O "${#COMPREPLY[@]}" COMPREPLY < <(compgen -W "${extopts[*]}" -- "$cur")
+	else
+		# 検索対象の補完
+		_filedir
+	fi
+
+}
+complete -o filenames -F _pt pt
+
+# XXX: なぜか _rg() が bash 立ち上げ毎に消えているので、強制的にロードする
+#      どうやらオンデマンドで動的にロードされている模様
+if [ -n "${PS1:-}" ] && include /usr/share/bash-completion/completions/rg.bash && ! executable -f _rg_org; then
+	function-copy _rg _rg_org
+fi
+function _rg() {
+	_rg_org "$@"
+
+	# save original result
+	local compreply=("${COMPREPLY[@]}")
+
+	local cur
+	_init_completion || return
+
+	# restore original result
+	COMPREPLY=("${compreply[@]}")
+
+	# 拡張オプションの補完
+	if [[ "$cur" == -* ]]; then
+		local extopts=(-x --sh --shell --spec --make --doc --text --no-text --no-test --include --exclude --ignore)
+		readarray -t -O "${#COMPREPLY[@]}" COMPREPLY < <(compgen -W "${extopts[*]}" -- "$cur")
+	else
+		# 検索対象の補完
+		_filedir
+	fi
+}
+complete -o filenames -F _rg rg
+
+# XXX: なぜか _ag() が bash 立ち上げ毎に消えているので、強制的にロードする
+#      どうやらオンデマンドで動的にロードされている模様
+if [ -n "${PS1:-}" ] && include /usr/share/bash-completion/completions/ag && ! executable -f _ag_org; then
+	function-copy _ag _ag_org
+fi
+function _ag() {
+	_ag_org "$@"
+
+	# save original result
+	local compreply=("${COMPREPLY[@]}")
+
+	local cur
+	_init_completion || return
+
+	# restore original result
+	COMPREPLY=("${compreply[@]}")
+
+	if [[ "$cur" == -* ]]; then
+		local extopts=(-x --no-pager --tab --sh --shell --spec --make --no-text --no-test --oneline -1 --exclude --exclude-dir "--color=")
+		extopts+=(--no-affinity --no-break --no-color --no-filename --no-follow
+			  --no-group --no-heading --no-mmap --no-multiline --no-numbers)
+		readarray -t COMPREPLY < <(compgen -W "${COMPREPLY[*]} ${extopts[*]}" -- "$cur")
+	fi
+}
+complete -o filenames -F _ag ag aag
+
+if [ -n "${PS1:-}" ] && ! executable -f _grep_org; then
+	# NOTE: 元の補完関数がfzfになっているので、検索
+	ORGGREPCOMP="$(complete -p grep 2>/dev/null | awk '{print $3}')"
+	if [ -n "${ORGGREPCOMP:-}" ]; then
+		function-copy "${ORGGREPCOMP:-}" _grep_org
+	fi
+fi
+function _grep() {
+	_grep_org "$@"
+
+	# save original result
+	local compreply=("${COMPREPLY[@]}")
+
+	local cur
+	_init_completion || return
+
+	# restore original result
+	COMPREPLY=("${compreply[@]}")
+
+	if [[ "$cur" == -* ]]; then
+		local extopts=(--tab --sh --shell --cc --spec --make --no-text --no-test --oneline -1 --hidden)
+		readarray -t COMPREPLY < <(compgen -W "${COMPREPLY[*]} ${extopts[*]}" -- "$cur")
+	fi
+}
+if executable -f _grep_org; then
+	complete -o filenames -F _grep grep grpe gerp g
+fi

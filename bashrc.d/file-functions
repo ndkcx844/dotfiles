@@ -1,0 +1,1235 @@
+# -*-Shell-script-*-
+#
+# This file is not a stand-alone shell script.
+# This provides functions to file that source it.
+
+# Usage: $FUNCNAME [OPTION]... [FILE]...
+function latest() {
+	command ls -1t "$@" | command head -1
+}
+
+# Usage: $FUNCNAME [OPTION]... FILE...
+function rm() {
+	local FILES=()
+	local RMOPTS=()
+	local SHOW_HELP=no
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			--interactive)
+				RMOPTS+=("$ARG" "$2")
+				shift
+				;;
+			--interactive=*)
+				RMOPTS+=("$ARG")
+				;;
+			--help)
+				SHOW_HELP=yes
+				RMOPTS+=("$ARG")
+				;;
+			--dir|--force|--no-preserve-root|--one-file-system|--preserve-root|--recursive|--verbose|--version|-I|-R|-d|-f|-i|-r|-v)
+				RMOPTS+=("$ARG")
+				;;
+			-[[:alnum:]][[:alnum:]]*)
+				readarray -t NEWARGS < <(echo -n "${ARG#-}" | command sed -rn 's/(.)/-\1\n/gp')
+				set -- "${NEWARGS[@]}" "${@:2}" # shift
+				continue
+				;;
+			--)
+				RMOPTS+=("$ARG")
+				FILES+=("${@:2}")
+				break
+				;;
+			*)
+				FILES+=("$ARG")
+				;;
+		esac
+		shift
+	done
+	if [ "${SHOW_HELP:-}" = no ] && [ "${#FILES[@]}" = 0 ] && executable fzf-rm; then
+		fzf-rm -- ${RMOPTS[@]:+"${RMOPTS[@]}"}
+		return
+	fi
+
+	command rm ${RMOPTS[@]:+"${RMOPTS[@]}"} ${FILES[@]:+"${FILES[@]}"}
+}
+
+# Usage: $FUNCNAME [OPTION]... FILE...
+function unar() {
+	if [ $# = 0 ] && executable fzf-unar; then
+		fzf-unar
+		return
+	fi
+	local FILES=("$@")
+
+	# STEP1. extract
+	command unar "${FILES[@]}" || return
+
+	# STEP2. acquire directory
+	local DIR="${FILES[*]%.*}"
+	if [ ! -d "$DIR" ]; then
+		# unar の挙動を逆手に取り、最新ディレクトリを解凍先ディレクトリとみなす
+		#   1. 親ディレクトリがない場合は basename のディレクトリを自動で作成
+		#   2. そうでない時はファイルに含まれるディレクトリ構造をそのまま展開
+		DIR="$(command find . -mindepth 1 -maxdepth 1 -cmin -1 -type "d" -exec ls -1d --sort=time --time=ctime {} + | head -1)"
+	fi
+	[ -d "$DIR" ] || return 0
+
+	# STEP3. change directory
+	echo "$DIR"
+	cd "$DIR" || return
+}
+alias unzip='unar'
+
+# Usage: $FUNCNAME [OPTION]... DIRECTORY...
+function rmdirs() {
+	local OPTS=()
+	local LAUNCHER=command
+	local DIRS=()
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			--su|--sudo)
+				LAUNCHER=sudo
+				;;
+			-*)
+				OPTS+=("$ARG")
+				;;
+			*)
+				DIRS+=("$ARG")
+				;;
+		esac
+		shift
+	done
+	command find "${DIRS[@]:-.}" -type d -print0 | command sort --reverse --zero-terminated | command xargs --null "$LAUNCHER" rmdir --ignore-fail-on-non-empty
+}
+
+# Usage: $FUNCNAME [OPTION]...
+function file-dump() {
+	local FILEPATH
+	local BASEDIR="${TMPDIR:-/var/tmp}/${FUNCNAME[0]}"
+	local FILENAME
+	local BASENAME
+	local NEEDS_CBCOPY=yes
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-p|--prefix)
+				BASENAME="$2"
+				;;
+			--prefix=*)
+				BASENAME="${1#*=}"
+				;;
+			-f|--file)
+				FILEPATH="$2"
+				shift
+				;;
+			--file=*)
+				FILEPATH="${1#*=}"
+				;;
+			-n|--name)
+				FILENAME="$2"
+				shift
+				;;
+			--name=*)
+				FILENAME="${1#*=}"
+				;;
+			-d|--directory)
+				BASEDIR="$2"
+				shift
+				;;
+			--directory=*)
+				BASEDIR="${1#*=}"
+				;;
+			-N|--null)
+				FILEPATH=/dev/null
+				NEEDS_CBCOPY=no
+				;;
+			*)
+				if [ -n "${FILEPATH:-}" ]; then
+					error "unsupported option: $ARG"
+					return 255
+				fi
+				FILEPATH="$ARG"
+				;;
+		esac
+		shift
+	done
+	if [ -z "${FILEPATH:-}" ]; then
+		local TIMESTAMP
+		TIMESTAMP="$(command date +%Y-%m-%d_%H-%M-%S)"
+		if [ -n "${FILENAME:-}" ]; then
+			FILEPATH="$BASEDIR"/"$TIMESTAMP"."$FILENAME"
+		elif [ -n "${BASENAME:-}" ]; then
+			FILEPATH="$(mktemp "$BASEDIR"/"$TIMESTAMP"."$BASENAME".XXXX)"
+		else
+			FILEPATH="$(mktemp "$BASEDIR"/"$TIMESTAMP".XXXX)"
+		fi
+	elif [ "${FILEPATH:0:1}" != / ]; then
+		FILEPATH="$PWD"/"$FILEPATH"
+	fi
+	[ -d "${FILEPATH%/*}" ] || mkdir -p "${FILEPATH%/*}"
+
+	command cat > "$FILEPATH"
+
+	if [ -s "$FILEPATH" ]; then
+		echo
+		echo dumped "$(file-size "$FILEPATH")" bytes to "$FILEPATH"
+		if [ "${NEEDS_CBCOPY:-}" = yes ]; then
+			cbcopy "$FILEPATH"
+		fi
+	elif [ -f "$FILEPATH" ]; then
+		command rm -f "$FILEPATH"
+	fi
+}
+alias dump='file-dump'
+function _file-dump() {
+	local cur
+	_init_completion || return
+
+	case "$cur" in
+		-*)
+			local opts=(-f --file -n --name -N --null -d --directory)
+			readarray -t COMPREPLY < <(compgen -W "${opts[*]}" -- "$cur")
+			;;
+		*)
+			_filedir "$@"
+			;;
+	esac
+}
+complete -F _file-dump file-dump dump
+
+# Usage: $FUNCNAME [OPTION]... SRC... DST
+function file-move() {
+	file-save --no-keep "$@"
+}
+alias file-mv='file-move'
+
+# Usage: $FUNCNAME [OPTION]... SRC... DSTDIR
+# Usage: $FUNCNAME [OPTION]... SRC    DSTFILE
+function file-save() {
+	local KEEP=yes
+	local FORCE=no
+	local SRCS=()
+	local I
+	for ((I = 1; I < $#; I++)); do
+		local ARG="${*:$I:1}"
+		case "$ARG" in
+			--force)
+				FORCE=yes
+				;;
+			--without-keep|--no-keep)
+				KEEP=no
+				;;
+			*)
+				SRCS+=("$ARG")
+				;;
+		esac
+	done
+	if [ "${#SRCS[@]}" = 0 ]; then
+		error "missing file operand, try '${FUNCNAME[0]} SRC... DST'"
+		return 255
+	fi
+	local DST="${*:$#:1}"
+	if (( 1 < "${#SRCS[@]}" )) && [ ! -d "${DST:-}" ]; then
+		error "not directory: '$DST'"
+		return 255
+	fi
+	local DSTFILE
+	local DSTDIR
+	if [ -d "${DST:-}" ]; then
+		DSTDIR="${DST%/}"
+	else
+		DSTFILE="$DST"
+		DSTDIR="${DST%*/}"
+	fi
+
+	local SRC
+	for SRC in "${SRCS[@]}"; do
+		SRC="${SRC%/}"
+		[ "$SRC" = . ] && SRC="$PWD"
+		local BASENAME
+		if [ -n "${DSTFILE:-}" ]; then
+			# case1. DSTがFILEの場合はDSTを使う
+			BASENAME="${DSTFILE##*/}"
+			if [ -f "$DSTFILE" ]; then
+				warn "already exists: $SAVED"
+				[ "${FORCE:-}" = yes ] || continue
+
+				# NOTE: DSTFILEが存在していてforceの場合はまず元のDSTFILEを退避
+				file-save --no-keep "$DSTFILE" "$DSTDIR"
+			fi
+		else
+			# case2. DSTがDIRの場合はSRCを使う
+			BASENAME="${SRC##*/}"
+			local SUFFIX
+			SUFFIX="$(command ls -l --directory --inode --time-style=+"%Y%m%d%H%M%S" "$SRC" | command awk -v OFS=. '{print $1,$7}')"
+			local FILE="$BASENAME"."$SUFFIX"
+			if [ -e "$DSTDIR/$FILE" ]; then
+				warn "already exists: $DSTDIR/$FILE"
+				[ "${FORCE:-}" = yes ] || continue
+			fi
+			local SAVED
+			if SAVED="$(command ls "$DSTDIR/${BASENAME%%.*}"*."$SUFFIX" 2>/dev/null)"; then
+				warn "already exists: $SAVED"
+				[ "${FORCE:-}" = yes ] || continue
+			fi
+		fi
+
+		local USER
+		USER="$(command stat --format "%G" "$SRC")"
+
+		local LAUNCHER=command
+		[ "$USER" = root ] && LAUNCHER=sudo
+		if [ "$KEEP" = yes ]; then
+			"$LAUNCHER" cp --archive --force "$SRC" "$DSTDIR/$FILE" || {
+				error "copy failed: $SRC -> $DSTDIR/$FILE"
+				return 255
+			}
+			echo "copied $SRC $DSTDIR/$FILE"
+		else
+			"$LAUNCHER" mv --force "$SRC" "$DSTDIR/$FILE" || {
+				error "move failed: $SRC -> $DSTDIR/$FILE"
+				return 255
+			}
+			echo "moved $SRC $DSTDIR/$FILE"
+		fi
+	done
+}
+alias file-backup='file-save'
+
+if [ -n "${PS1:-}" ] && ! executable _filedir_org; then
+	function-copy _filedir _filedir_org
+fi
+function _filedir() {
+	local cur="$cur"
+	_filedir_org "$@"
+
+	[[ $cur =~ ^($|[.]{,2}/|~) ]] && return
+	[ -e "$cur" ] && return
+	[ "$1" = -d ] && return
+
+	# 拡張: 相対パスの場合は $CDPATH からも探す
+	local IFS=$'\n'
+	local base path
+	for base in ${CDPATH//:/$'\n'}; do
+		for path in $(compgen -f -- "$base"/"$cur"); do
+			local file="${path#$base/}"
+			[[ -d $path && ! -e $file ]] && file+=/
+			COMPREPLY+=("$file")
+		done
+	done
+	if [ ${#COMPREPLY[@]} != 0 ]; then
+		compopt -o nospace
+	fi
+}
+
+if ! executable unix2dos; then
+	alias unix2dos='nkf --overwrite -Lw'
+fi
+alias unix2win='unix2dos'
+
+if ! executable dos2unix; then
+	alias dos2unix='nkf --overwrite -Lu'
+fi
+alias win2unix='dos2unix'
+
+function file-encode2sjis() {
+	nkf --overwrite -s "$@"
+}
+alias file-encode2win='file-encode2win'
+
+function file-encode2utf8() {
+	nkf --overwrite -w "$@"
+}
+
+function file-convert2unix() {
+	local FILE
+	for FILE in "${@:--}"; do
+		[ "$FILE" = "-" ] && FILE=/dev/stdin
+		if [ "$FILE" = "/dev/stdin" ]; then
+			command cat "$FILE" | \
+				file-eol2lf | \
+				file-encode2utf8 | \
+				file-append-last-eol
+		else
+			file-eol2lf "$FILE"
+			file-encode2utf8 "$FILE"
+			file-append-last-eol "$FILE"
+		fi
+	done
+}
+alias file-convert2linux='file-convert2unix'
+
+function file-convert2windows() {
+	file-eol2crlf "$@"
+	file-encode2sjis "$@"
+}
+alias file-convert2win='file-convert2windows'
+
+function file-eol2lf() {
+	dos2unix "$@"
+}
+
+function file-eol2crlf() {
+	unix2dos "$@"
+}
+
+function file-append-last-eol() {
+	local FILE
+	for FILE in "${@:--}"; do
+		[ "$FILE" = "-" ] && FILE=/dev/stdin
+		[ -r "$FILE" ] || continue
+		if [ "$FILE" != "/dev/stdin" ]; then
+			# TODO: support --force option
+			command cmp --quiet <(command tail -c 1 "$FILE") <<< "" && continue
+			echo >> "$FILE"
+		else
+			local LINE
+			while IFS= read -r LINE || [ -n "$LINE" ]; do
+				echo "$LINE"
+			done
+		fi
+	done
+}
+alias file-add-last-eol='file-append-last-eol'
+
+function file-delete-last-eol() {
+	command perl -i -pe 's/\n// if eof' "$@"
+}
+alias file-trim-last-eol='file-delete-last-eol'
+
+function file-decolorize() {
+	command sed -r -e "s/\x1b\[([0-9]+(;[0-9]+)*)*[ABCDEHFGJKSTfm]//g" "$@"
+}
+
+function file-colorized() {
+	command grep -m1 -Esq -e $'\x1b'"\[([0-9]+(;[0-9]+)*)*[ABCDEHFGJKSTfm]" "$@"
+}
+
+function file-colorize-name() {
+	command perl -nle '
+	BEGIN {
+		our $KEY = undef;
+		our $MAP = {};
+		foreach my $i (split(/:/, $ENV{LS_COLORS})) {
+			my ($key, $color) = split(/=/, $i);
+			$MAP->{$key} = $color;
+		};
+	}
+	my $file = $_;
+	foreach my $key (sort keys(%{$MAP})) {
+		$KEY = $key;
+		my $reg = $key;
+		$reg =~ s/\./\\./g;
+		$reg =~ s/\*/.*/g;
+		last if ($reg eq "bd" && -b $file);
+		last if ($reg eq "cd" && -c $file);
+		last if ($reg eq "di" && -d $file);
+		last if ($reg eq "ex" && -x $file);
+		last if ($reg eq "ln" && -l $file);
+		last if ($reg eq "pi" && -p $file);
+		last if ($reg eq "so" && -S $file);
+		last if ($file =~ /^$reg$/);
+		$KEY = undef
+	}
+	print "\x1b[$MAP->{$KEY}m" . $file . "\x1b[0m";' "${@:--}"
+}
+
+function file-size() {
+	local FILE="${1:?error: missing FILE}"
+
+	command stat --format="%s" "$FILE"
+}
+
+function file-guess-encoding() {
+	local FILES=()
+	local QUIET=no
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			--)
+				FILES+=("${@:2}")
+				break
+				;;
+			--quiet|--silent)
+				QUIET=yes
+				;;
+			*)
+				FILES+=("$ARG")
+				;;
+		esac
+		shift
+	done
+	if [ "${#FILES[@]}" = 0 ]; then
+		[ "${QUIET:-}" = yes ] || error "no input file"
+		return 255
+	fi
+
+	local FILE
+	for FILE in "${FILES[@]}"; do
+		if [ "$FILE" != "-" ] && [ ! -f "$FILE" ]; then
+			[ "${QUIET:-}" = yes ] || warn "no such file $FILE"
+			continue
+		fi
+
+		local ENCODE
+		if executable nkf; then
+			ENCODE="$(nkf --guess <(head --lines=1000 "$FILE") | command awk '{print toupper($1)}')"
+		elif executable file; then
+			ENCODE="$(file -i "$FILE" | command sed -r 's/.* charset=(.*)/\U\1/')"
+		else
+			[ "${QUIET:-}" = yes ] || error "could not guess encoding: 'file' and 'nkf' command are not available"
+			return 255
+		fi
+		if [ -z "${ENCODE:-}" ]; then
+			[ "${QUIET:-}" = yes ] || error "could not guess encoding: empty result of 'file' or 'nkf' command"
+			return 255
+		fi
+
+		# normalize
+		case "${ENCODE//_/-}" in
+			UTF8|UTF-8)
+				echo "$FILE: UTF-8"
+				;;
+			EUCJP*|EUC-JP*|EUC_JP*|ISO-8859-1|ISO88591)
+				echo "$FILE: EUC-JP"
+				;;
+			SJIS*|SHIFTJIS|SHIFT-JIS|SHIFT_JIS|UNKNOWN-8BIT|WINDOWS-31J|CP932|MS932)
+				echo "$FILE: SHIFT-JIS"
+				;;
+			ISO-2022-JP*|ISO2022JP*)
+				echo "$FILE: ISO-2022-JP"
+				;;
+			ASCII|US-ASCII)
+				echo "$FILE: ASCII"
+				;;
+			*)
+				[ "${QUIET:-}" = yes ] || warn "unknown encoding: $FILE: $ENCODE"
+				;;
+		esac
+	done
+}
+alias file-detect-encoding='file-guess-encoding'
+
+# Usage: $FUNCNAME [OPTION...] ORGWORD NEWWORD [DIR...]
+# TODO: 文字コード対応
+function file-replace-string() {
+	local TARGETS=()
+	local ORGWORD
+	local NEWWORD
+	local WORDMATCH=no
+	local INVERT_CASE=no
+	local REGEXP_MODE=basic
+	while [ $# != 0 ]; do
+		case "$1" in
+			-x|--debug)
+				trap 'trap - RETURN INT; set +o xtrace' RETURN INT
+				set -o xtrace
+				;;
+			-w|--word-regexp)
+				WORDMATCH=yes
+				;;
+			-i|--invert-case)
+				INVERT_CASE=yes
+				;;
+			-r|-E|--regexp-extended|--extended-regexp)
+				REGEXP_MODE=extended
+				;;
+			-F|--fixed-string)
+				REGEXP_MODE=none
+				;;
+			-f|--files-from)
+				readarray -t -O "${#TARGETS[@]}" TARGETS < "$2"
+				shift
+				;;
+			--files-from=*)
+				readarray -t -O "${#TARGETS[@]}" TARGETS < "${1#*=}"
+				;;
+			-|/dev/stdin)
+				TARGETS=(-)
+				;;
+			-*)
+				error "unsupported option: $1"
+				return 255
+				;;
+			*)
+				if [ -z "${ORGWORD:-}" ]; then
+					ORGWORD="$1"
+				elif [ -z "${NEWWORD:-}" ]; then
+					NEWWORD="$1"
+				else
+					TARGETS+=("$1")
+				fi
+				;;
+		esac
+		shift
+	done
+	if [ -z "$ORGWORD" ] || [ -z "$NEWWORD" ]; then
+		error "Usage: ${FUNCNAME[0]} [OPTION...] ORGWORD NEWWORD [DIR...]"
+		return 255
+	fi
+	local TMPFILE=""
+	if [ "${#TARGETS[@]}" = 1 ] && [ "${TARGETS[0]:-}" = - ]; then
+		TMPFILE="$(mktemp "${TMPDIR:-/tmp}/${FUNCNAME[0]}.XXXX")"
+		command cat - > "$TMPFILE"
+		TARGETS=("$TMPFILE")
+	fi
+
+	local PATTERN="$ORGWORD"
+	[ $REGEXP_MODE = none ] && PATTERN="$(escape-regexp "$PATTERN")"
+	[ $WORDMATCH = yes ] && PATTERN="\<$ORGWORD\>"
+	local REGEXOPTS=()
+	[ $REGEXP_MODE = extended ] && REGEXOPTS+=(-E)
+	command grep --null --exclude-dir=.* --no-messages --recursive --files-with-matches ${REGEXOPTS[@]:+"${REGEXOPTS[@]}"} -e "$PATTERN" "${TARGETS[@]:-$PWD}" \
+		| command xargs --null --no-run-if-empty sed -i ${REGEXOPTS[@]:+"${REGEXOPTS[@]}"} -e "s/${PATTERN//\//\\/}/${NEWWORD//\//\\/}/g"
+
+	if [ "$INVERT_CASE" = yes ]; then
+		if [[ "$ORGWORD" =~ ^[^[:lower:]]+$ ]]; then
+			ORGWORD="${ORGWORD,,}"
+			NEWWORD="${NEWWORD,,}"
+		elif [[ "$ORGWORD" =~ ^[^[:upper:]]+$ ]]; then
+			ORGWORD="${ORGWORD^^}"
+			NEWWORD="${NEWWORD^^}"
+		else
+			return 0
+		fi
+		file-replace-string ${REGEXOPTS[@]:+"${REGEXOPTS[@]}"} "$ORGWORD" "$NEWWORD" "${TARGETS[@]:-$PWD}"
+	fi
+
+	if [ -f "${TMPFILE:-}" ]; then
+		command cat "${TMPFILE:-}"
+		rm -f "${TMPFILE:-}"
+	fi
+}
+
+# Usage: $FUNCNAME [OPTION...] ORGWORD NEWWORD [FILE...]
+function file-rename() {
+	local CMDOPTS=()
+	local ORGWORD
+	local NEWWORD
+	local FILES=()
+	local RECURSIVE=no
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-r|--recursive)
+				RECURSIVE=yes
+				;;
+			--dry-run)
+				CMDOPTS+=(--no-act)
+				;;
+			-*)
+				CMDOPTS+=("$ARG")
+				;;
+			*)
+				if [ -z "${ORGWORD:-}" ]; then
+					ORGWORD="$ARG"
+				elif [ -z "${NEWWORD:-}" ]; then
+					NEWWORD="$ARG"
+				else
+					FILES+=("$ARG")
+				fi
+				;;
+		esac
+		shift
+	done
+	if [ -n "${ORGWORD:-}" ] && [ -n "${NEWWORD:-}" ] && [ "${#FILES[@]}" = 0 ]; then
+		if [ "${RECURSIVE:-}" = yes ]; then
+			readarray -t FILES < <(find . -mindepth 1 -name ".*" -prune -o -print)
+		else
+			FILES=(*)
+		fi
+	fi
+
+	command rename ${CMDOPTS[@]:+"${CMDOPTS[@]}"} ${ORGWORD:+"$ORGWORD"} ${NEWWORD:+"$NEWWORD"} ${FILES[@]:+"${FILES[@]}"}
+}
+
+if executable nkf; then
+	function file-convert() {
+		local NKFOPTS=()
+		for ((I = 1; I < $# + 1; I++)); do
+			local ARG="${*:$I:1}"
+			case "$ARG" in
+				-f|--from-code|--from-coding)
+					NKFOPTS+=("--ic=${@:$((++I)):1}");;
+				-t|--to-code|--to-coding)
+					NKFOPTS+=("--oc=${@:$((++I)):1}");;
+				-i)
+					NKFOPTS+=(--overwrite)
+					;;
+				*)
+					NKFOPTS+=("$ARG")
+					;;
+			esac
+		done
+
+		command nkf "${NKFOPTS[@]}"
+	}
+	alias nkf='file-convert'
+fi
+
+function file-exists() {
+	local FILE="${1:?error: missing FILE operand}"
+	if [ "$UID" = 0 ]; then
+		test -e "$FILE"
+	else
+		sudo su -c "test -e $FILE"
+	fi
+}
+
+function file-delete-trailing-whitespace() {
+	if [ $# = 0 ]; then
+		local RESULT
+		RESULT="$(command sed -r 's/[[:space:]]+$//')"
+		# NOTE: separate stdin vs stdout
+		command cat <<-EOF
+		--
+		$RESULT
+		EOF
+	else
+		command sed -i -r 's/[[:space:]]+$//' "$@"
+	fi
+}
+alias file-trim-trailing-whitespace='file-delete-trailing-whitespace'
+
+# NOTE: "--unified" option is enabled by default unless style was unspecified.
+function diff() {
+	local OPTS=()
+	local PAGER="${PAGER:-less}"
+	local COLORIZER
+	local COLOR=auto
+	local FORMATOPT
+	local PRECMDS=("command")
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			--normal|-c|--context|--context=*|-u|--unified|--unified=*|-e|--ed|-n|--rcs|-y|--side-by-sid)
+				FORMATOPT="$ARG"
+				OPTS+=("$ARG")
+				;;
+			-C|-U)
+				FORMATOPT="$ARG"
+				OPTS+=("$ARG" "$2")
+				shift
+				;;
+			# custom options
+			-x|--debug)
+				trap 'trap - RETURN INT; set +o xtrace' RETURN INT
+				set -o xtrace
+				;;
+			--pager)
+				PAGER="$2"
+				shift
+				;;
+			--pager=*)
+				PAGER="${ARG#*=}"
+				;;
+			--no-pager)
+				PAGER=""
+				;;
+			--colorizer)
+				COLORIZER="$2"
+				shift
+				;;
+			--colorizer=*)
+				COLORIZER="${ARG#*=}"
+				;;
+			--color|--colour)
+				if [[ "$2" =~ ^(auto|always|force|no|none|never)$ ]]; then
+					COLOR="$2"
+					shift
+				else
+					COLOR=auto
+				fi
+				;;
+			--color=*)
+				COLOR="${ARG#*=}"
+				;;
+			--no-color)
+				COLOR=never
+				;;
+			-*)
+				OPTS+=("$ARG")
+				;;
+			*)
+				# NOTE: プロセス置換を渡せないので、sudoは必要なときだけに限定
+				if [ "$(stat --format="%U" "$ARG" 2>/dev/null)" = root ]; then
+					PRECMDS=(sudo)
+				fi
+				OPTS+=("$ARG")
+				;;
+		esac
+		shift
+	done
+	case "${COLOR:-auto}" in
+		auto)
+			if stdout-is-tty; then
+				COLOR=yes
+			else
+				COLORIZER=""
+			fi
+			;;
+		always|force)
+			COLOR=yes
+			;;
+		never|no|none)
+			COLORIZER=""
+			COLOR=never
+			;;
+		*)
+			error "unsupported color type: $COLOR"
+			return 255
+			;;
+	esac
+	if [ "${COLOR:-}" = yes ] && [ -z "${COLORIZER:-}" ]; then
+		if executable grc; then
+			PRECMDS+=(grc --stdout --stderr --colour on)
+		elif executable diff-so-fancy; then
+			COLORIZER="diff-so-fancy"
+		else
+			COLORIZER="file-highlight --type=diff"
+		fi
+	fi
+	if stdout-is-tty; then
+		if [ -z "${FORMATOPT:-}" ]; then
+			OPTS+=(--unified)
+		fi
+		if [ -n "${COLORIZER}" ]; then
+			PAGER="$COLORIZER | $PAGER"
+		fi
+	else
+		PAGER=""
+	fi
+	if [ -n "${PAGER:-}" ]; then
+		"${PRECMDS[@]}" "${FUNCNAME[0]}" ${OPTS[@]:+"${OPTS[@]}"} | eval "$PAGER"
+	else
+		"${PRECMDS[@]}" "${FUNCNAME[0]}" ${OPTS[@]:+"${OPTS[@]}"}
+	fi
+
+	return "${PIPESTATUS[0]}"
+}
+if [ "$(command-type diff)" = alias ]; then
+	unalias diff
+fi
+if [ -n "${PS1:-}" ] && ! executable -f _diff_org; then
+	# NOTE: 元の補完関数がfzfになっているので、検索
+	ORGDIFFCOMP="$(complete-function diff)"
+	if [ -n "${ORGDIFFCOMP:-}" ]; then
+		function-copy "${ORGDIFFCOMP:-}" _diff_org
+	fi
+fi
+function _diff() {
+	_diff_org "$@"
+
+	# save original result
+	local compreply=("${COMPREPLY[@]}")
+
+	local cur
+	_init_completion || return
+
+	# restore original result
+	COMPREPLY=("${compreply[@]}")
+
+	if [[ "$cur" == -* ]]; then
+		local extopts=(-x --debug --pager --no-pager --colorizer --color --no-color)
+		readarray -t COMPREPLY < <(compgen -W "${COMPREPLY[*]} ${extopts[*]}" -- "$cur")
+	fi
+}
+if executable -f _diff_org; then
+	complete -o filenames -F _diff diff
+fi
+
+function ls() {
+	local OPTS=()
+	local PAGER="${PAGER:-less}"
+	local ONELINE=no
+	local ONLYDIR=no
+	local REVERSE=no
+	local SORT=Name
+	local UNIT=byte
+	# NOTE: lsとexaでオプションが衝突した場合はlsを優先する
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			# custom options
+			--pager)
+				PAGER="$2"
+				shift
+				;;
+			--pager=*)
+				PAGER="${ARG#*=}"
+				;;
+			--no-pager)
+				PAGER=""
+				;;
+			-[no1l])
+				OPTS+=("$ARG")
+				ONELINE=yes
+				;;
+			# for compatibility
+			-r|--reverse)
+				REVERSE=yes
+				;;
+			-c|--changed)
+				SORT=changed
+				;;
+			-f)
+				SORT=none
+				OPTS+=(--all)
+				;;
+			--modified)
+				SORT=modified
+				;;
+			-t)
+				SORT="time"
+				;;
+			-u|--accessed)
+				SORT=accessed
+				;;
+			-v)
+				SORT=version
+				;;
+			-S)
+				SORT=size
+				;;
+			-s)
+				UNIT=block
+				;;
+			-U)
+				SORT=none
+				;;
+			-X)
+				SORT=extension
+				;;
+			--sort=*)
+				SORT="${ARG#*=}"
+				;;
+			# NOTE: override original option
+			-C|--created)
+				SORT=created
+				;;
+			-D|--only-dirs)
+				ONLYDIR=yes
+				;;
+			-[[:alnum:]][[:alnum:]]*)
+				readarray -t NEWARGS < <(echo -n "${ARG#-}" | command sed -rn 's/(.)/-\1\n/gp')
+				set -- "${NEWARGS[@]}" "${@:2}" # shift
+				continue
+				;;
+			*)
+				OPTS+=("$ARG")
+				;;
+		esac
+		shift
+	done
+	local CMD=ls
+	if executable --file exa; then
+		if stdout-is-tty; then
+			CMD=exa
+		fi
+	fi
+	if [ "$UNIT" = block ]; then
+		if [ "$CMD" = exa ]; then
+			OPTS+=(--blocks)
+		else
+			OPTS+=(--size)
+		fi
+	fi
+	case "${SORT:-}" in
+		changed|ctime|status)
+			if [ "$CMD" = exa ]; then
+				OPTS+=("--sort=changed")
+			else
+				OPTS+=("--sort=ctime")
+			fi
+			;;
+		none)
+			OPTS+=("--sort=none")
+			;;
+		modified|mtime|"time")
+			OPTS+=("--sort=time")
+			;;
+		accessed|atime|access|use)
+			if [ "$CMD" = exa ]; then
+				OPTS+=("--sort=accessed")
+			else
+				OPTS+=("--sort=atime")
+			fi
+			;;
+		version)
+			# NOTE: exaには--sort=version相当がないため、lsにフォールバックする
+			# XXX: 途中でCMDを上書きしているので、干渉しそう
+			CMD="ls"
+			OPTS+=("--sort=version")
+			;;
+		size)
+			OPTS+=("--sort=size")
+			;;
+		extension)
+			OPTS+=("--sort=extension")
+			;;
+		name)
+			if [ "$CMD" = exa ]; then
+				OPTS+=("--sort=name")
+				[ "$REVERSE" = yes ] && REVERSE=no || REVERSE=yes
+			fi
+			;;
+		Name)
+			if [ "$CMD" = exa ]; then
+				OPTS+=("--sort=Name")
+				[ "$REVERSE" = yes ] && REVERSE=no || REVERSE=yes
+			fi
+			;;
+		Extension)
+			OPTS+=("--sort=extension")
+			[ "$REVERSE" = yes ] && REVERSE=no || REVERSE=yes
+			;;
+		*)
+			error "${FUNCNAME[0]}: invalid argument '$SORT' for '--sort'"
+			return 1
+			;;
+	esac
+	if [ "$CMD" = exa ]; then
+		# NOTE: exaのsort順がlsと逆なので補正
+		[ "$REVERSE" = yes ] || OPTS+=(--reverse)
+	else
+		[ "$REVERSE" = yes ] && OPTS+=(--reverse)
+	fi
+	if [ "$ONLYDIR" = yes ]; then
+		if [ "$CMD" = ls ]; then
+			error "${FUNCNAME[0]}: invalid option -- '-D/--only-dirs'"
+			return 2
+		fi
+		OPTS+=("--only-dirs")
+	fi
+	if ! stdout-is-tty || [ "$ONELINE" = no ]; then
+		PAGER=""
+	fi
+	local CMD_PATH
+	CMD_PATH="$(type -P "$CMD")"
+	if [ -n "${PAGER:-}" ]; then
+		sudo "$CMD_PATH" ${OPTS[@]:+"${OPTS[@]}"} --color=always | command "$PAGER"
+	else
+		sudo "$CMD_PATH" ${OPTS[@]:+"${OPTS[@]}"}
+	fi
+}
+
+if [ -n "${PS1:-}" ] && ! executable -f _ls_org; then
+	# NOTE: 元の補完関数がfzfになっているので、検索
+	ORGLSCOMP="$(complete-function ls)"
+	if [ -n "${ORGLSCOMP:-}" ]; then
+		function-copy "${ORGLSCOMP:-}" _ls_org
+	fi
+fi
+function _ls() {
+	_ls_org "$@"
+
+	# save original result
+	local compreply=("${COMPREPLY[@]}")
+
+	local cur
+	_init_completion || return
+
+	# restore original result
+	COMPREPLY=("${compreply[@]}")
+
+	if [[ "$cur" == -* ]]; then
+		local extopts=(--color --no-color)
+		readarray -t COMPREPLY < <(compgen -W "${COMPREPLY[*]} ${extopts[*]}" -- "$cur")
+	fi
+}
+if executable -f _ls_org; then
+	complete -o filenames -F _ls ls
+fi
+
+function vi() {
+	local CMD=vi
+	executable vim && CMD=vim
+
+	local CMDS=()
+	readarray -t CMDS < <(sudo-wrap-cmdline -t -w -p "-[wWsStTcui]|--startuptime" -- "$CMD" "$@")
+
+
+	command "${CMDS[@]}"
+}
+alias v='vi'
+
+function ln() {
+	local CMDS=()
+	readarray -t CMDS < <(sudo-wrap-cmdline -t -w -p "-[St]|--suffix|--target-directory" -- "${FUNCNAME[0]}" "$@")
+
+	command "${CMDS[@]}"
+}
+
+function mv() {
+	local OPTS=()
+	local ARGS=()
+	local NEEDS_CD=no
+	local SRC
+	local BACKUP=numbered
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-t|--target-directory)
+				OPTS+=("$ARG" "$2")
+				shift
+				;;
+			-S|--suffix)
+				OPTS+=("$ARG" "$2")
+				shift
+				;;
+			--backup)
+				BACKUP="$2"
+				shift
+				;;
+			--backup=*)
+				BACKUP="${ARG#*=}"
+				;;
+			-*)
+				OPTS+=("$ARG")
+				;;
+			*)
+				if [ -z "${SRC:-}" ]; then
+					SRC="$ARG"
+					if [ "$(path-normalize "$ARG")" = . ]; then
+						ARG="$PWD"
+						NEEDS_CD=yes
+					fi
+				fi
+				ARGS+=("$ARG")
+				;;
+		esac
+		shift
+	done
+	set -- ${OPTS[@]:+"${OPTS[@]}"} ${BACKUP:+--backup="$BACKUP"} ${ARGS[@]:+"${ARGS[@]}"}
+
+	local CMDS=()
+	readarray -t CMDS < <(sudo-wrap-cmdline -t -w -p "-[St]|--suffix|--target-directory" -- "${FUNCNAME[0]}" "$@")
+
+	local RET=0
+	command "${CMDS[@]}" || RET=$?
+
+	if [ "$RET" = 0 ] && [ "$NEEDS_CD" = yes ]; then
+		builtin cd .. || :
+	fi
+	return $RET
+}
+
+function cp() {
+	local OPTS=()
+	local ARGS=()
+	local SRC
+	local BACKUP=numbered
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-t|--target-directory)
+				OPTS+=("$ARG" "$2")
+				shift
+				;;
+			--backup)
+				BACKUP="$2"
+				shift
+				;;
+			--backup=*)
+				BACKUP="${ARG#*=}"
+				;;
+			-*)
+				OPTS+=("$ARG")
+				;;
+			*)
+				if [ -z "${SRC:-}" ]; then
+					SRC="$ARG"
+					if [ "$(path-normalize "$ARG")" = . ]; then
+						ARG="$PWD"
+					fi
+				fi
+				ARGS+=("$ARG")
+				;;
+		esac
+		shift
+	done
+	set -- ${OPTS[@]:+"${OPTS[@]}"} ${BACKUP:+--backup="$BACKUP"} ${ARGS[@]:+"${ARGS[@]}"}
+
+	local CMDS=()
+	readarray -t CMDS < <(sudo-wrap-cmdline -t -w -p "-[St]|--suffix|--target-directory|--no-preserve|--sparse" -- "${FUNCNAME[0]}" "$@")
+
+	command "${CMDS[@]}"
+}
+
+function rm() {
+	local OPTS=()
+	local ARGS=()
+	local NEEDS_CD=no
+	local SRC
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			--)
+				ARGS+=("$@")
+				break
+				;;
+			-*)
+				OPTS+=("$ARG")
+				;;
+			*)
+				if [ -z "${SRC:-}" ]; then
+					SRC="$ARG"
+					if [ "$(path-normalize "$ARG")" = . ]; then
+						ARG="$PWD"
+						NEEDS_CD=yes
+					fi
+				fi
+				ARGS+=("$ARG")
+				;;
+		esac
+		shift
+	done
+	set -- ${OPTS[@]:+"${OPTS[@]}"} ${ARGS[@]:+"${ARGS[@]}"}
+
+	local CMDS=()
+	readarray -t CMDS < <(sudo-wrap-cmdline -t -w -- "${FUNCNAME[0]}" "$@")
+
+	local RET=0
+	command "${CMDS[@]}" || RET=$?
+
+	if [ "$RET" = 0 ] && [ "$NEEDS_CD" = yes ]; then
+		builtin cd .. || :
+	fi
+	return $RET
+}
+
+# Usage: $FUNCNAME [OPTION...] [FILE...]
+function wc() {
+	local FILES=()
+	local ARGS=("$@") I
+	for ((I = 0; I < ${#ARGS[@]}; I++)); do
+		local ARG="${ARGS[I]}"
+		case "$ARG" in
+			-c|--bytes|-m|--chars|-l|--lines|--files0-from=*|-L|--max-line-length|-w|--words|--help|--version)
+				;;
+			--files0-from)
+				((I++))
+				;;
+			*)
+				FILES+=("$ARG")
+				;;
+		esac
+	done
+
+	local CMDS=()
+	readarray -t CMDS < <(sudo-wrap-cmdline -t -r -p "--files0-from" -- "${FUNCNAME[0]}" "$@")
+
+	local RET=0
+	if ((${#FILES[@]} <= 1)); then
+		local RESULT
+		RESULT="$(command "${CMDS[@]}")" || RET=$?
+		echo "$RESULT"
+		cbcopy -N "$(col 1 <<< "$RESULT")"
+	else
+		command "${CMDS[@]}" || RET=$?
+	fi
+
+	return $RET
+}

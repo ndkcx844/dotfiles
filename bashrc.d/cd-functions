@@ -1,0 +1,437 @@
+# -*-Shell-script-*-
+#
+# This file is not a stand-alone shell script.
+# This provides functions to bash that source it.
+
+# environment
+[[ "$CDPATH" =~ (^|:)$HOME(:|$) ]] || export CDPATH="$HOME:$CDPATH"
+
+[ -n "$CD_HISTORY_FILE" ] || readonly CD_HISTORY_FILE=~/.cd_history
+if [ "${#CD_HISTORY[@]}" = 0 ]; then
+	[ -n "${CD_HISTORY_MAX:-}" ] || CD_HISTORY_MAX=10
+
+	if [ -r "$CD_HISTORY_FILE" ]; then
+		# XXX: compatibility with co51
+		while IFS= read -r DIR; do
+			CD_HISTORY+=("$DIR")
+		done < <(command head -10 "$CD_HISTORY_FILE")
+	fi
+	if [ "${#CD_HISTORY[@]}" = 0 ]; then
+		CD_HISTORY=("$PWD")
+	fi
+
+	export CD_HISTORY_MAX
+	export CD_HISTORY
+fi
+
+# aliases
+alias dc='cd'
+alias ..='cd ..'
+
+# Usage: $FUNCNAME [-|=|--|++|-OFFSET|+OFFSET|DIRPATH|-l [ID]]
+function cd() {
+	local NEXTDIR OFFSET
+	case "$1" in
+		=|==|-h|--history|--hist)
+			NEXTDIR="$(cd-history select)"
+			[ -n "${NEXTDIR:-}" ] || return
+			echo "$NEXTDIR"
+			history -s cd "$NEXTDIR"
+			;;
+		-l|--list)
+			cdq-show
+			return
+			;;
+		-)
+			# NOTE: keep behavior of builtin cd
+			NEXTDIR="$OLDPWD"
+			;;
+		--)
+			OFFSET=-1
+			;;
+		++)
+			OFFSET=+1
+			;;
+		-[0-9]*)
+			OFFSET="$1"
+			;;
+		+[0-9]*)
+			OFFSET="$1"
+			;;
+		...*)
+			NEXTDIR="${1#.}"
+			NEXTDIR="${NEXTDIR//./..\/}"
+			;;
+		..[0-9])
+			N="${1#..}"
+			local i
+			for ((i = 0; i < N; i++)); do
+				NEXTDIR+=../
+			done
+			;;
+		*)
+			NEXTDIR="$1"
+			;;
+	esac
+	shift
+	if [ $# != 0 ]; then
+		echo "error: garbage argument(s): $*" >&2
+		return 255
+	fi
+
+	local QINDEX
+	if [ -n "${OFFSET:-}" ]; then
+		QINDEX="$(cdq-index-by-offset "$OFFSET")"
+		if [ -z "${QINDEX:-}" ] || [ -z "${CD_HISTORY[$QINDEX]:-}" ]; then
+			echo "error: no entry in history: $OFFSET" >&2
+			return 255
+		fi
+	else
+		if [ -z "${NEXTDIR:-}" ]; then
+			NEXTDIR="$HOME"
+		fi
+		# 末尾の "/" を fzf の query として使うので、正規化
+		if [[ "$NEXTDIR" =~ (.*[^/])/+$ ]]; then
+			NEXTDIR="$(path-normalize "$NEXTDIR")"/
+		fi
+	fi
+
+	if [ -n "${NEXTDIR:-}" ]; then
+		# パス補完と重複チェック
+		local PREVPATH="$PWD"
+		local REALPATH="$NEXTDIR"
+
+		# NOTE: builtin cd が CDPATH を優先してしまうので、./に補正する
+		if [ -e "$PWD/$REALPATH" ] && [ "${REALPATH:0:1}" != / ]; then
+			NEXTDIR=./"${NEXTDIR#./}"
+			REALPATH=./"${NEXTDIR#./}"
+		fi
+
+		# 0. NEXTDIR が存在しなければシンボリックリンクを無視したパスを検索
+		if [ ! -e "$REALPATH" ] && [[ "$REALPATH" == */* ]]; then
+			local P
+			P="$(path-resolve "$REALPATH")"
+			if [ -e "${P:-}" ]; then
+				REALPATH="$P"
+				NEXTDIR="$P"
+			fi
+		fi
+
+		# 1. NEXTDIR が存在しなければ $CDPATH から検索
+		if [ ! -e "$REALPATH" ] && [ "${REALPATH:0:1}" != / ]; then
+			local IFS=$'\n'
+			for PARENTDIR in ${CDPATH//:/$'\n'}; do
+				local DIR="$PARENTDIR"/"${NEXTDIR%/}"
+				[ -e "$DIR" ] || continue
+				REALPATH="$DIR"
+				# NEXTDIR="$DIR" # builtin cdがやるので不要
+				break
+			done
+		fi
+
+		local INTERACTIVE=no
+		if stdin-is-tty && stdout-is-tty && executable fzf; then
+			INTERACTIVE=yes
+		fi
+
+		# 2. NEXTDIR が存在しなければ履歴からインタラクティブ(完全一致)
+		if [ "${INTERACTIVE:-}" = yes ] && [ ! -e "$REALPATH" ]; then
+			local SELECTED QUERY
+			[[ "$NEXTDIR" == */ ]] && QUERY="${NEXTDIR%/}\$" || QUERY="$NEXTDIR"
+			QUERY=/"${QUERY#/}"
+			SELECTED="$(cd-history select --query="$QUERY")"
+			[ $? = 130 ] && INTERACTIVE=no
+			if [ -e "$SELECTED" ]; then
+				echo "$SELECTED"
+				history -s cd "$SELECTED"
+				REALPATH="$SELECTED"
+				NEXTDIR="$SELECTED"
+			fi
+		fi
+
+		# 3. NEXTDIR が存在しなければ履歴からインタラクティブ(部分一致)
+		if [ "${INTERACTIVE:-}" = yes ] && [ ! -e "$REALPATH" ]; then
+			declare -A DIRS
+			local PARENTDIR KEYDIR="${NEXTDIR%%/*}"
+			for PARENTDIR in $(cd-history show | command grep -E "/$KEYDIR(/|$)"); do
+				local REALPATH="${PARENTDIR%/${KEYDIR}*}"/"${NEXTDIR:-}"
+				[ -d "${REALPATH:-}" ] || continue
+
+				DIRS["${REALPATH%/}"]="${REALPATH%/}"
+			done
+			local DIR SELECTED
+			SELECTED="$(for DIR in "${DIRS[@]}"; do echo "${DIR:-}"; done | file-colorize-name | FZF_DEFAULT_OPTS="$FZF_ONESHOT_OPTS --delimiter / --nth -1 --no-sort" fzf)"
+			[ $? = 130 ] && INTERACTIVE=no
+			if [ -e "$SELECTED" ]; then
+				echo "$SELECTED"
+				history -s cd "$SELECTED"
+				REALPATH="$SELECTED"
+				NEXTDIR="$SELECTED"
+			fi
+		fi
+
+		if [ ! -e "$REALPATH" ]; then
+			[ "${NEXTDIR:0:1}" != / ] && NEXTDIR=./"${NEXTDIR#./}"
+			echo "bash: cd: $NEXTDIR: No such file or directory" >&2
+			return 1
+		fi
+
+		# 同一ディレクトリへの重複実行チェック
+		if path-equals "$REALPATH" "$PREVPATH"; then
+			return 0
+		fi
+	fi
+
+	# case1. OFFSET  指定時は rotate (RANGE=QSIZE で QINDEX回)
+	# case2. NEXTDIR 指定時は switch (RANGE=QINDEX で 1回)
+	if [ -n "${QINDEX:-}" ]; then
+		NEXTDIR="${CD_HISTORY[*]:$QINDEX:1}"
+		if builtin cd "$NEXTDIR"; then
+			cd-history-update
+			cdq-rotate ${#CD_HISTORY[@]} "$OFFSET"
+		else
+			cdq-remove "$QINDEX"
+		fi
+	else
+		if builtin cd "$NEXTDIR"; then
+			cd-history-update
+			# XXX: symlink の時は NEXTDIR と PWD がマッチしないことがある
+			QINDEX=$(cdq-index-by-key "$PWD")
+			if [ -n "${QINDEX:-}" ]; then
+				cdq-rotate "$((QINDEX + 1))" 1
+			else
+				cdq-prepend "$PWD"
+			fi
+		else
+			if [ -n "${QINDEX:-}" ]; then
+				cdq-remove "$QINDEX"
+			fi
+		fi
+	fi
+}
+
+function cd-history() {
+	local CMD=show
+	if [ -n "${1:-}" ]; then
+		CMD="$1"
+		shift
+	fi
+	case "$CMD" in
+		show|list)
+			cd-history-show ${@:+"$@"}
+			;;
+		update)
+			cd-history-update ${@:+"$@"}
+			;;
+		delete|remove|del|rm)
+			cd-history-delete ${@:+"$@"}
+			;;
+		"select")
+			cd-history-select ${@:+"$@"}
+			;;
+		*)
+			echo "error: unsupported command: $CMD" >&2
+			return 255
+			;;
+	esac
+}
+
+function cd-history-show() {
+	# TODO: 最終更新時刻順にソートして出力: $lastmodified = (stat $filename)[9];
+	# 重複してたら uniq、絶対パスが同じでも uniq
+	command perl -nl -e 'use Cwd qw(realpath); $dir = $_; next unless -d $_; $realpath = realpath($_); print unless ($seen{$realpath}++)' "$CD_HISTORY_FILE" <(fasd -R -d -l 2>/dev/null) 2>/dev/null
+}
+
+function cd-history-update() {
+	local dir="${1:-$PWD}"
+	[ -f "$CD_HISTORY_FILE" ] || touch "$CD_HISTORY_FILE"
+	command perl -snle '
+	BEGIN {
+	     unless (-l $head) {
+	          print $head;
+	          $seen{$head}++;
+	     }
+	}
+	next if -l $_;
+	next unless -d $_;
+	next if $seen{$_};
+	exit unless keys(%seen) < $limit;
+	print;
+	$seen{$_}++;
+	' -- -limit=1000 -head="$dir" "$CD_HISTORY_FILE" > "$CD_HISTORY_FILE".out
+	if [ -s "$CD_HISTORY_FILE".out ]; then
+		# XXX: 内容が消える場合があったので、tmp-rename 方式にする
+		command mv -f "$CD_HISTORY_FILE".out "$CD_HISTORY_FILE"
+	else
+		command rm -f "$CD_HISTORY_FILE".out
+	fi
+}
+
+function cd-history-delete() {
+	local dir="${1:?error: path not found}"
+	[ -f "$CD_HISTORY_FILE" ] || touch "$CD_HISTORY_FILE"
+	command sed -i "/${dir//\//\\/}/d" "$CD_HISTORY_FILE"
+}
+
+function cd-history-select() {
+	local QUERY
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			--query)
+				QUERY="$2"
+				shift
+				;;
+			--query=*)
+				QUERY="${ARG#*=}"
+				;;
+			*)
+				error "unsupported argument: $ARG"
+				;;
+		esac
+		shift
+	done
+	if [ "${QUERY:0:1}" = / ]; then
+		QUERY=^"${QUERY#/}"
+	fi
+	cd-history show | file-colorize-name | FZF_DEFAULT_OPTS="$FZF_ONESHOT_OPTS --delimiter / --nth -1 --no-sort" fzf ${QUERY:+--query="$QUERY "}
+}
+
+function cdq-show() {
+	local i
+	for ((i = 0; i < ${#CD_HISTORY[@]}; i++)); do
+		if [ $i = 0 ]; then
+			printf -- "%2d  %3s %s\n" "0" " " "${CD_HISTORY[$i]}"
+		else
+			printf -- "-%d (+%d) %s\n" "$i" "$((${#CD_HISTORY[@]} - i))" "${CD_HISTORY[$i]}"
+		fi
+	done
+}
+
+function cdq-index-by-key() {
+	[ -n "${1:-}" ] || return 255
+
+	local KEY="$1"
+	for ((i = 0; i < ${#CD_HISTORY[@]}; i++)); do
+		[ "$KEY" = "${CD_HISTORY[$i]}" ] || continue
+		echo "$i"
+		break
+	done
+}
+function cdq-index-by-offset() {
+	[ -n "${1:-}" ] || return 255
+	echo "$(((${#CD_HISTORY[@]} - OFFSET) % ${#CD_HISTORY[@]}))"
+}
+function cdq-prepend() {
+	[ -n "${1:-}" ] || return 255
+
+	local DIR="$1"
+	export CD_HISTORY=("$DIR" "${CD_HISTORY[@]}")
+	if (( CD_HISTORY_MAX < ${#CD_HISTORY[@]} )); then
+		cdq-remove $((CD_HISTORY_MAX - 1))
+	fi
+}
+function cdq-remove() {
+	[ -n "${1:-}" ] || return 255
+
+	local QINDEX="$1"
+	[ -n "${CD_HISTORY[$QINDEX]:-}" ] || return
+	unset "CD_HISTORY[$QINDEX]"
+	export CD_HISTORY=("${CD_HISTORY[@]}")
+}
+function cdq-rotate() {
+	[ -n "${1:-}" ] || return 255
+	[ -n "${2:-}" ] || return 255
+
+	local QRANGE="$(($1 - 1))"
+	local OFFSET="$2"
+	[ -n "${CD_HISTORY[$QRANGE]:-}" ] || return
+	[ "$OFFSET" = 0 ] && return
+
+	local COUNT=$OFFSET
+	if (( COUNT < 0 )); then
+		COUNT=$((QRANGE + 1 + COUNT))
+	fi
+	for ((i = 0; i < COUNT; i++)); do
+		local VAL="${CD_HISTORY[$QRANGE]}"
+		unset "CD_HISTORY[$QRANGE]"
+		export CD_HISTORY=("$VAL" "${CD_HISTORY[@]}")
+	done
+}
+
+if [ -n "${PS1:-}" ] && ! executable _cd_org; then
+	if executable _cd; then
+		function-copy _cd _cd_org
+	else
+		# NOTE: suppress "command not found" message
+		function _cd_org() {
+			:
+		}
+	fi
+fi
+function _cd() {
+	local cur="${COMP_WORDS[$COMP_CWORD]}"
+	case "$cur" in
+		..)
+			compopt -o filenames
+			COMPREPLY=(..)
+			return
+			;;
+		../*) # 現在位置がシンボリックリンク
+			CDPATH="" _cd_org "$@"
+			if [ -L "$PWD" ]; then
+				local path="${PWD%/*}"/"${cur#*/}"
+				local e
+				for e in $(compgen -d -- "$path"); do
+					COMPREPLY+=(.."${e#${PWD%/*}}")
+				done
+			fi
+			return
+			;;
+		"")
+			CDPATH="" _cd_org "$@"
+			return
+			;;
+	esac
+
+	# invoke original function
+	_cd_org "$@"
+
+	# NOTE: シンボリックリンクだと末尾が "//" になるのを抑止
+	local i
+	for ((i = 0; i < ${#COMPREPLY[@]}; i++)); do
+		[ -d "${COMPREPLY[$i]}" ] || continue
+		[[ ${COMPREPLY[$i]} =~ /$ ]] || continue
+		COMPREPLY[$i]=${COMPREPLY[$i]%/}
+	done
+
+	# complete from mru/history
+	if [[ "${cur:-}" =~ ^[^/]+$ ]]; then
+		local dir
+		for dir in $(compgen -W "$(cd-history show | command awk -F / '{print $NF}')" -- "$cur"); do
+			[[ "${COMPREPLY[*]}" =~ (^|[$IFS])$dir/?($|[$IFS]) ]] && continue
+			# NOTE: 履歴は -o filenames (末尾の "/" の自動補完) の対象にならないので、自前で付ける
+			[ -d "$dir" ] || dir+=/
+			COMPREPLY+=("$dir")
+		done
+	fi
+
+	# 履歴ディレクトリのサブディレクトリも補完
+	if [[ "$cur" =~ ^[^/]+/.* ]] && [ ! -d "${cur%%/*}" ]; then
+		local basedir
+		for basedir in $(cd-history show | command sed -rn "/\/${cur%%/*}$/p"); do
+			basedir="${basedir%/*}"
+			local dir
+			for dir in $(compgen -d -- "$basedir/$cur"); do
+				COMPREPLY+=("${dir#$basedir/}"/)
+			done
+		done
+	fi
+
+	# 拡張オプションの補完
+	if [[ "$cur" =~ ^-.* ]]; then
+		local extopts=(--history -h --list -l)
+		readarray -t COMPREPLY < <(echo -n ${COMPREPLY[@]:+"${COMPREPLY[@]}"}; compgen -W "${extopts[*]}" -- "$cur")
+	fi
+}
+complete -o nospace -F _cd cd dc

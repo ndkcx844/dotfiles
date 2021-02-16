@@ -1,0 +1,20 @@
+# -*- shell-script -*-
+# .bashrc
+
+# Source global definitions
+if [ -f /etc/bashrc ]; then
+	. /etc/bashrc
+fi
+
+# Import custom utilities
+# See also /usr/share/bash-completion/bash_completion
+if [ -d ~/.bashrc.d ]; then
+	for FILE in ~/.bashrc.d/*; do
+		[ -r "$FILE" ] || continue
+		IGNORE_REGEX='(^(\#|\.\#)|\.(~|ba?k|ori?g|rej|swp|dpkg*|rpm(orig|new|save))$)'
+		[[ ${FILE##*/} =~ $IGNORE_REGEX ]] && continue
+
+		. "$FILE"
+	done
+fi
+unset FILE IGNORE_REGEX

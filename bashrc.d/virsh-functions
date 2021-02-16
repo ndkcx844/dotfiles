@@ -1,0 +1,216 @@
+# -*-Shell-script-*-
+#
+# This file is not a stand-alone shell script.
+# This provides functions to virsh that source it.
+
+executable virsh || return 0
+
+# alias
+alias vrish='virsh'
+
+function virsh() {
+	if [ $# = 0 ]; then
+		# NOTE: 対話モードを無効化
+		virsh-cmd --help
+		return
+	fi
+	local CMD="$1"
+	shift
+	case "$CMD" in
+		console)
+			CMD=console
+			;;
+		up)
+			CMD=start
+			;;
+		down|stop|teardown)
+			# TODO: --force
+			CMD=shutdown
+			;;
+		restart)
+			CMD=reboot
+			;;
+		net)
+			;;
+		-l|--list|list)
+			CMD=list
+			[ $# = 0 ] && set -- --all
+			;;
+	esac
+	if executable virsh-"${CMD:-}"; then
+		virsh-"${CMD:-}" "$@"
+		return
+	fi
+
+	if [ $# = 0 ] && [ -n "${CMD:-}" ] && executable fzf; then
+		local VM
+		local FZF_OPTS="+m --tac --preview='[ -n {2} ] && sudo virsh dominfo {2}'"
+		case "$CMD" in
+			console)
+				VM="$(virsh-list --state-running | FZF_DEFAULT_OPTS="$FZF_OPTS" fzf | command awk '{print $2}')"
+				[ -n "${VM:-}" ] || return 0
+				set -- "$VM"
+				;;
+			start)
+				VM="$(virsh-list --state-shutoff | FZF_DEFAULT_OPTS="$FZF_OPTS" fzf | command awk '{print $2}')"
+				[ -n "${VM:-}" ] || return 0
+				set -- "$VM"
+				;;
+			shutdown|destroy)
+				VM="$(virsh-list | FZF_DEFAULT_OPTS="$FZF_OPTS" fzf | command awk '{print $2}')"
+				[ -n "${VM:-}" ] || return 0
+				set -- "$VM"
+				;;
+			reboot)
+				read -r ID VM <<<"$(virsh-list --all | FZF_DEFAULT_OPTS="$FZF_OPTS" fzf | command awk '{print $1,$2}')"
+				[ -n "${VM:-}" ] || return 0
+				if [ "$ID" = - ]; then
+					CMD=start
+				fi
+				set -- "$VM"
+				;;
+		esac
+		echo "${FUNCNAME[0]}" "$CMD" "$@"
+	fi
+
+	virsh-cmd ${CMD:+"$CMD"} ${@:+"$@"}
+}
+
+function virsh-stop-guest() {
+	local ALL=no
+	local TARGETS=()
+	while [ $# != 0 ]; do
+		case "$1" in
+			--all)
+				ALL=yes
+				;;
+			--domain)
+				TARGETS+=("$2")
+				shift
+				;;
+			--domain=*)
+				TARGETS+=("${1#*=}")
+				;;
+			*)
+				;;
+		esac
+		shift
+	done
+	if [ "$ALL" = yes ]; then
+		readarray -t TARGETS < <(virsh-list --name --state-running)
+	fi
+
+	local TARGET
+	for TARGET in "${TARGETS[@]}"; do
+		if ! virsh-list --state-running --name | command grep -Fwqs "$TARGET"; then
+			echo -n "already stopped $TARGET"
+			continue
+		fi
+		echo -n "stopping $TARGET."
+		virsh-cmd shutdown "$TARGET"
+	done
+
+	# wait for
+	for TARGET in "${TARGETS[@]}"; do
+		local I DONE
+		for ((I = 0; I < 10; I++)); do
+			if ! virsh-list --state-running --name | command grep -Fwqs "$TARGET"; then
+				echo "done"
+				DONE=yes
+				break
+			fi
+			sleep 1
+			echo -n .
+		done
+		if [[ ! $DONE ]]; then
+			echo "warn: destroing $TARGET" >&2
+			virsh-cmd destroy "$TARGET"
+		fi
+	done
+}
+
+function virsh-net() {
+	local CMD=show
+	if [ -n "${1:-}" ]; then
+		CMD="$1"
+		shift
+	fi
+	case "$CMD" in
+		stop|flush|reset|destroy)
+			virsh-stop-guest --all
+			virsh-cmd net-destroy "${1:-default}"
+			;;
+		start)
+			virsh-cmd net-start "${1:-default}"
+			;;
+		restart)
+			virsh-stop-guest --all
+			virsh-cmd net-destroy "${1:-default}"
+			sleep 3
+			virsh-cmd net-start "${1:-default}"
+			;;
+		show)
+			local VMS=("$@")
+			if [ ${#VMS[@]} = 0 ]; then
+				readarray -t VMS < <(virsh-list --name --state-running)
+			fi
+			for VM in "${VMS[@]}"; do
+				echo "$VM"
+				virsh-cmd domifaddr "$VM" | sed -e 1,2d -e 's/^/ /'
+			done
+			;;
+		*)
+			echo "error: unsupported option: $CMD" >&2
+	esac
+}
+
+function virsh-list() {
+	virsh-cmd "${FUNCNAME#virsh-}" "$@" | command sed -r '${/^$/d}'
+}
+
+function virsh-cmd() {
+	# NOTE: sudo 経由での実行は実際のコマンドになるので command は不要
+	sudo "virsh" "$@"
+}
+
+function virsh-setup-terminal-environment() {
+	ssh-setup-terminal-environment "$@"
+}
+
+if [ -n "${PS1:-}" ] && ! executable _virsh_org; then
+	function-copy _virsh _virsh_org
+fi
+function _virsh() {
+	local cur words
+	_init_completion || return
+
+	local word cmd
+	for word in "${words[@]:1}"; do
+		[[ "$word" =~ ^[a-z] ]] || continue
+
+		cmd="$word"
+		break
+	done
+
+	if [[ $cur =~ ^- ]]; then
+		_virsh_org "$@"
+		return
+	fi
+
+	case "$cmd" in
+		reset|stop|flush|destroy|shutdown|teardown|down)
+			COMPREPLY+=($(compgen -W "$(virsh-list --name --state-running)" -- "$cur"))
+			;;
+		start|up)
+			COMPREPLY+=($(compgen -W "$(virsh-list --name --state-shutoff)" -- "$cur"))
+			;;
+		restart|reboot)
+			COMPREPLY+=($(compgen -W "$(virsh-list --name --all)" -- "$cur"))
+			;;
+		*) # 不完全のパターン
+			COMPREPLY+=($(compgen -W "$(command-options -c "${FUNCNAME#_}")" -- "$cur"))
+			COMPREPLY+=($(compgen -W "up flush stop down teardown restart" -- "$cur"))
+			;;
+	esac
+}
+complete -F _virsh virsh vrish

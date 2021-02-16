@@ -1,0 +1,39 @@
+# -*- shell-script -*-
+# This file is not a stand-alone shell script.
+# This provides aliases that source it.
+
+# enable expand_aliases for "su -"
+shopt -s expand_aliases
+
+alias ls='command-without-dereference ls --color=auto'
+alias cp='command-without-dereference cp'
+alias mv='command-without-dereference mv'
+alias rm='command-without-dereference --without-cdpath rm -i'
+alias ln='command-without-dereference ln -i'
+alias touch='command-without-dereference touch'
+alias less='command-without-dereference less'
+alias cat='command-without-dereference cat'
+alias vi='command-without-dereference vi'
+# XXX: emacs on CentOS5 not support --no-window-system option...
+alias emacs='command-without-dereference command env TERM=xterm-256color XEMACS=yes emacs -nw'
+
+# aliases for utilities
+alias today='LANG=C command date "+%Y%m%d"'
+alias now='LANG=C command date "+%Y%m%d%H%M%S"'
+alias stracefilter='echo grep -v -e "\.so\." -e seek -e recvmsg -e fcntl -e ioctl -e mpro -e locale -e map -e get -e sig -e read -e close -e select -e stat -e time -e futex'
+alias filterstrace='stracefilter'
+
+alias eicar='echo -n '\''X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*'\'''
+alias gtube='echo -n '\''XJS*C4JDBQADN1.NSBN3*2IDNEN*GTUBE-STANDARD-ANTI-UBE-TEST-EMAIL*C.34X'\'''
+alias etube='gtube'
+
+alias vscode='code'
+alias tag='gtags'
+alias tags='gtags'
+
+alias globalip='curl ifconfig.io'
+
+alias uzip='unzip'
+alias uar='unar'
+
+alias wire='wireshark'

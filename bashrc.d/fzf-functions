@@ -1,0 +1,1447 @@
+# -*-Shell-script-*-
+#
+# This file is not a stand-alone shell script.
+# This provides functions to fzf that source it.
+
+export FZF_PREVIEW_CMD=~/.local/bin/fzf-preview
+export FZF_COLOR_OPTS="--color=fg:-1,bg:-1,hl:#c678dd,fg+:#ffffff,bg+:#4b5263,hl+:#d858fe --color=info:#98c379,prompt:#61afef,pointer:#be5046,marker:#e5c07b,spinner:#61afef,header:#61afef --ansi"
+export FZF_LESS_OPTS="--RAW-CONTROL-CHARS --ignore-case --squeeze-blank-lines --LONG-PROMPT --HILITE-UNREAD"
+export FZF_BIND_OPTS="--bind=?:toggle-preview-wrap,F5:toggle-preview,ctrl-q:preview-up,ctrl-v:preview-down,ctrl-w:backward-kill-word,ctrl-k:kill-line,ctrl-space:toggle-all,ctrl-l:'execute(history -s less {}; LESS=\"$FZF_LESS_OPTS\" less {} </dev/tty >/dev/tty)',ctrl-e:'execute(history -s emacs -nw {}; TERM=xterm-256color emacs -nw {} </dev/tty >/dev/tty)'"
+export FZF_COMMON_OPTS="$FZF_COLOR_OPTS $FZF_BIND_OPTS --inline-info --no-sort --exact --preview='$FZF_PREVIEW_CMD {}' --prompt='SELECT > '"
+export FZF_REPEATS_OPTS="$FZF_COMMON_OPTS --print-query --expect=f12"
+export FZF_ONESHOT_OPTS="$FZF_COMMON_OPTS --select-1 --exit-0"
+export FZF_DEFAULT_OPTS="$FZF_ONESHOT_OPTS"
+# XXX: for compatibility with Cent5
+FIND_SUPPORT_READABLE="$(LANG=C command find --help | command grep -Fws -o -e -readable)"
+
+# TODO: fzf-findとfzf-selectの棲み分け、fzf-selectに一本化したほうがいい
+# XXX: fzf-findの---bindでhistory -sしても履歴が残らない
+
+function fzf-find() {
+	local TYPE=all
+	local LSOPTS=(--directory "--color=always")
+	local FINDRULES=()
+	local MAXDEPTH=1
+	local MINDEPTH=1
+	local DIRS=()
+	local SORT=time
+	local HIDDEN=no
+	local FOLLOW=no
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-x|--debug)
+				trap 'trap - RETURN INT; set +o xtrace' RETURN INT
+				set -o xtrace
+				;;
+			--all)
+				TYPE=all
+				;;
+			--dir|--directory)
+				TYPE=directory
+				;;
+			--file)
+				TYPE="file"
+				;;
+			--depth|--maxdepth)
+				MAXDEPTH="$2"
+				shift
+				;;
+			--mindepth)
+				MINDEPTH="$2"
+				shift
+				;;
+			--self)
+				MINDEPTH=0
+				;;
+			--depth=[0-9]*|--maxdepth=[0-9]*)
+				MAXDEPTH="${ARG#*=}"
+				;;
+			-r|--recursive)
+				MAXDEPTH=""
+				;;
+			--follow|--follow-symlink)
+				FOLLOW=yes
+				;;
+			--sort)
+				SORT="$2"
+				shift
+				;;
+			--sort=*)
+				SORT="${ARG#*=}"
+				;;
+			-U)
+				SORT=none
+				;;
+			-u)
+				SORT=atime
+				;;
+			-S)
+				SORT=size
+				;;
+			-t)
+				SORT="time"
+				;;
+			-c)
+				SORT=ctime
+				;;
+			-v)
+				SORT=version
+				;;
+			-X)
+				SORT=extension
+				;;
+			--hidden)
+				HIDDEN=yes
+				;;
+			--include)
+				FINDRULES+=(-name "$2")
+				shift
+				;;
+			--include=*)
+				FINDRULES+=(-name "${ARG#*=}")
+				;;
+			--exclude)
+				FINDRULES+=(-not -name "$2")
+				shift
+				;;
+			--exclude=*)
+				FINDRULES+=(-not -name "${ARG#*=}")
+				;;
+			--include-dir)
+				FINDRULES+=(-path "*/$2/*")
+				shift
+				;;
+			--include-dir=*)
+				FINDRULES+=(-path "*/${ARG#*=}/*")
+				;;
+			--exclude-dir)
+				# 戦略1. -not を使うには、-path "*/dir/*"
+				# 戦略2. -prune を使うには、先頭
+				FINDRULES+=(-not -path "*/$2/*")
+				shift
+				;;
+			--exclude-dir=*)
+				FINDRULES+=(-not -path "*/${ARG#*=}/*")
+				;;
+			--include-regex)
+				FINDRULES+=(-regex "$2")
+				shift
+				;;
+			--include-regex=*)
+				FINDRULES+=(-regex "${ARG#*=}")
+				;;
+			--exclude-regex)
+				FINDRULES+=(-not -regex "$2")
+				shift
+				;;
+			--exclude-regex=*)
+				FINDRULES+=(-not -regex "${ARG#*=}")
+				;;
+			*)
+				if [ -d "$ARG" ]; then
+					DIRS+=("${ARG%/}"/)
+				else
+					LSOPTS+=("$ARG")
+				fi
+				;;
+		esac
+		shift
+	done
+	case "${SORT:-}" in
+		atime|access|use|ctime|status)
+			LSOPTS+=("--sort=time" "--time=$SORT")
+			;;
+		"time"|size|extension|version)
+			LSOPTS+=("--sort=$SORT")
+			;;
+	esac
+
+	# assemble find options
+	local FINDOPTS=()
+	[ "${FOLLOW:-}" = yes ] && FINDOPTS=(-L ${FINDOPTS[@]:+"${FINDOPTS[@]}"}) # -L, -H, -P は必ず先頭
+	FINDOPTS+=("${DIRS[@]:-.}")
+	FINDOPTS+=(-mindepth "$MINDEPTH" ${MAXDEPTH:+-maxdepth "$MAXDEPTH"}) # -{min,max}depth はディレクトリの直後
+	FINDOPTS+=(-regextype posix-extended)   # -regex 用
+	FINDOPTS+=(-ignore_readdir_race)        # ファイル情報を取得できなかった場合のエラー抑止
+	# Permission Denied エラー抑止
+	if [ -n "${FIND_SUPPORT_READABLE:-}" ]; then
+		FINDOPTS+=(-not "$FIND_SUPPORT_READABLE" -prune)
+	else
+		# for find 4.2.27 on Cent5
+		FINDOPTS+=(-not -uid $UID -a -not -perm -a+r -prune)
+	fi
+	local DIR HAS_HIDDENDIR=no
+	for DIR in ${DIRS[@]:+"${DIRS[@]}"}; do
+		if [[ "$DIR" =~ (^|/)\.[^/]+ ]]; then
+			HAS_HIDDENDIR=yes
+			break
+		fi
+	done
+	if [ "$HIDDEN" = no ]; then
+		if [ "$HAS_HIDDENDIR" = no ]; then
+			FINDOPTS+=(-o -path "*/.[^.]*") # XXX: -pathの必要があるのか？
+		else
+			FINDOPTS+=(-o -name ".*")
+		fi
+		FINDOPTS+=(-prune -o -name "*~" -prune -o -name "#*" -prune -o -name ".#*" -prune)
+	fi
+
+	case "$TYPE" in
+		directory)
+			FINDOPTS+=(-o -type d)
+			;;
+		file)
+			FINDOPTS+=(-o -type f)
+			;;
+		*)
+			FINDOPTS+=(-o "(" -type f -o -type d -o -type l ")")
+			;;
+	esac
+	FINDOPTS+=(${FINDRULES[@]:+"${FINDRULES[@]}"})
+	FINDOPTS+=(-exec ls "${LSOPTS[@]}" {} +)
+
+	# NOTE: fzf のオプションは FZF_DEFAULT_OPTS で制御する
+	fzf < <(command find "${FINDOPTS[@]}")
+}
+
+function fzf-cd() {
+	local DIR
+	DIR="$(fzf-find --dir "$@")"
+	[ -n "${DIR:-}" ] || return 0
+
+	cd "$DIR" || return
+}
+alias fcd='fzf-cd'
+
+# Usage: $FUNCNAME [QUERY|CMDOPTION...] [--] [FZFOPTION]...
+function fzf-netstat() {
+	local QUERY
+	local FZFOPTS=()
+	local CMDOPTS=()
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-x|--debug)
+				trap 'trap - RETURN INT; set +o xtrace' RETURN INT
+				set -o xtrace
+				;;
+			--)
+				FZFOPTS+=("${@:2}")
+				break
+				;;
+			--fzf-options)
+				local _OPTS
+				read -r -a _OPTS <<< "$2"
+				FZFOPTS+=("${_OPTS[@]}")
+				shift
+				;;
+			--fzf-options=*)
+				local _OPTS
+				read -r -a _OPTS <<< "${ARG#*=}"
+				FZFOPTS+=("${_OPTS[@]}")
+				;;
+			-*)
+				CMDOPTS+=("$ARG")
+				;;
+			*)
+				if [ -n "${QUERY:-}" ]; then
+					error "garbage argument: '$ARG'"
+					return 255
+				fi
+				QUERY="$ARG"
+				;;
+		esac
+		shift
+	done
+	local RESULT
+	RESULT="$(sudo netstat "${CMDOPTS[@]:--nap}" | fzf --header-lines=2 -m "--preview=" --query=${QUERY:+"$QUERY "} ${FZFOPTS[@]:+"${FZFOPTS[@]}"})"
+	[ -z "${RESULT:-}" ] && return 0
+
+	echo "$RESULT"
+}
+alias fnetstat='fzf-netstat'
+
+# Usage: $FUNCNAME [QUERY|CMDOPTION...] [--] [FZFOPTION]...
+function fzf-ss() {
+	local QUERY
+	local FZFOPTS=()
+	local CMDOPTS=()
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-x|--debug)
+				trap 'trap - RETURN INT; set +o xtrace' RETURN INT
+				set -o xtrace
+				;;
+			--)
+				FZFOPTS+=("${@:2}")
+				break
+				;;
+			--fzf-options)
+				local _OPTS
+				read -r -a _OPTS <<< "$2"
+				FZFOPTS+=("${_OPTS[@]}")
+				shift
+				;;
+			--fzf-options=*)
+				local _OPTS
+				read -r -a _OPTS <<< "${ARG#*=}"
+				FZFOPTS+=("${_OPTS[@]}")
+				;;
+			-*)
+				CMDOPTS+=("$ARG")
+				;;
+			*)
+				if [ -n "${QUERY:-}" ]; then
+					error "garbage argument: '$ARG'"
+					return 255
+				fi
+				QUERY="$ARG"
+				;;
+		esac
+		shift
+	done
+	local RESULT
+	RESULT="$(command ss ${CMDOPTS[@]:+"${CMDOPTS[@]}"} | fzf --header-lines=1 -m --preview="" --query=${QUERY:+"$QUERY "} ${FZFOPTS[@]:+"${FZFOPTS[@]}"})"
+	[ -z "${RESULT:-}" ] && return 0
+
+	echo "$RESULT"
+}
+alias fss='fzf-ss'
+
+# Usage: $FUNCNAME [QUERY|CMDOPTION...] [--] [FZFOPTION]...
+function fzf-rpm() {
+	local QUERY=
+	local FZFOPTS=()
+	local CMDOPTS=()
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-x|--debug)
+				trap 'trap - RETURN INT; set +o xtrace' RETURN INT
+				set -o xtrace
+				;;
+			--)
+				FZFOPTS+=("${@:2}")
+				break
+				;;
+			--fzf-options)
+				local _OPTS
+				read -r -a _OPTS <<< "$2"
+				FZFOPTS+=("${_OPTS[@]}")
+				shift
+				;;
+			--fzf-options=*)
+				local _OPTS
+				read -r -a _OPTS <<< "${ARG#*=}"
+				FZFOPTS+=("${_OPTS[@]}")
+				;;
+			-*)
+				CMDOPTS+=("$ARG")
+				;;
+			*)
+				if [ -n "${QUERY:-}" ]; then
+					error "garbage argument: '$ARG'"
+					return 255
+				fi
+				QUERY="$ARG"
+				;;
+		esac
+		shift
+	done
+
+	local RPMNAME
+	RPMNAME="$(sudo rpm --query --all | fzf --query=${QUERY:+"$QUERY "} ${FZFOPTS[@]:+"${FZFOPTS[@]}"})"
+	[ -z "${RPMNAME:-}" ] && return 0
+
+	local CMDS=(sudo rpm "${CMDOPTS[@]:--qi}" "$RPMNAME")
+	echo "${CMDS[@]:-}"
+	history-append --eval "${CMDS[@]:-}"
+	"${CMDS[@]:-}"
+}
+alias frpm='fzf-rpm'
+complete -F _rpm fzf-rpm frpm
+
+# Usage: $FUNCNAME [QUERY|CMDOPTION...] [--] [FZFOPTION]...
+function fzf-kill() {
+	local QUERY
+	local FZFOPTS=(--multi)
+	local CMDOPTS=()
+	local FORCE=no
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-x|--debug)
+				trap 'trap - RETURN INT; set +o xtrace' RETURN INT
+				set -o xtrace
+				;;
+			-f|--force)
+				FORCE=yes
+				;;
+			--)
+				FZFOPTS+=("${@:2}")
+				break
+				;;
+			--fzf-options)
+				local _OPTS
+				read -r -a _OPTS <<< "$2"
+				FZFOPTS+=("${_OPTS[@]}")
+				shift
+				;;
+			--fzf-options=*)
+				local _OPTS
+				read -r -a _OPTS <<< "${ARG#*=}"
+				FZFOPTS+=("${_OPTS[@]}")
+				;;
+			-*)
+				CMDOPTS+=("$ARG")
+				;;
+			*)
+				if [ -n "${QUERY:-}" ]; then
+					error "garbage argument: '$ARG'"
+					return 255
+				fi
+				QUERY="$ARG"
+				;;
+		esac
+		shift
+	done
+
+	local PID
+	for PID in $(fzf-ps -o user,pid,ppid,lstart,cmd --query=${QUERY:+"$QUERY "} -- ${FZFOPTS[@]:+"${FZFOPTS[@]}"}); do
+		[ -n "${PID:-}" ] || continue
+
+		sudo "kill" -0 "$PID" &>/dev/null || continue
+
+		echo sudo "kill" ${CMDOPTS[@]:+"${CMDOPTS[@]}"} "$PID"
+		sudo "kill" ${CMDOPTS[@]:+"${CMDOPTS[@]}"} "$PID"
+
+		for i in {1..100}; do
+			sleep 0.01
+			sudo "kill" -0 "$PID" &>/dev/null || continue 2
+		done
+
+		if [ "${FORCE:-}" = yes ]; then
+			sudo "kill" -KILL "$PID"
+		fi
+	done
+}
+alias fkill='fzf-kill'
+complete -F _kill fzf-kill fkill
+
+# TODO: unar@fileとコードが重複している
+function fzf-unar() {
+	local FINDOPTS=(--file)
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-x|--debug)
+				trap 'trap - RETURN INT; set +o xtrace' RETURN INT
+				set -o xtrace
+				;;
+			-r|--recursive)
+				FINDOPTS+=("$ARG")
+				;;
+			--)
+				shift
+				break
+				;;
+			*)
+				break
+				;;
+		esac
+		shift
+	done
+	local FILES=()
+	if [ -f "${1:-}" ]; then
+		FILES=("$@")
+	else
+		readarray -t FILES < <(FZF_DEFAULT_OPTS="$FZF_ONESHOT_OPTS --query=$*" fzf-find "${FINDOPTS[@]}")
+		[ "${#FILES[@]}" = 0 ] && return 0
+	fi
+
+	# STEP1. extract
+	command unar "${FILES[@]}" || return
+
+	# STEP2. acquire directory
+	local DIR="${FILES[*]%.*}"
+	if [ ! -d "$DIR" ]; then
+		# unar の挙動を逆手に取り、最新ディレクトリを解凍先ディレクトリとみなす
+		#   1. 親ディレクトリがない場合は basename のディレクトリを自動で作成
+		#   2. そうでない時はファイルに含まれるディレクトリ構造をそのまま展開
+		DIR="$(find . -mindepth 1 -maxdepth 1 -mmin -1 -type "d" -exec ls -1d --sort=time --time=ctime {} + | head -1)"
+	fi
+	[ -d "$DIR" ] || return 0
+
+	# STEP3. change directory
+	echo "$DIR"
+	cd "$DIR" || return
+}
+alias funar='fzf-unar'
+alias fzf-unzip='fzf-unar'
+alias funzip='fzf-unar'
+alias fextract='fzf-unar'
+
+function fzf-less() {
+	local FILES=()
+	readarray -t FILES < <(fzf-find --file "$@")
+	[ "${#FILES[@]}" = 0 ] && return 0
+
+	command less "${FILES[@]}"
+}
+
+function fzf-select() {
+	local RECURSIVE=auto
+	local FOLLOW=auto
+	local TYPE=all
+	local ACCEPT=no
+	local ONELINE=no
+	local KEYBIND
+	declare -A BINDMAP
+	# NOTE: C-z するのに --expect する必要がある(--bind だとダメ)
+	local FZF_EXPECT_KEY="ctrl-d,ctrl-l,ctrl-e,ctrl-s,ctrl-y,ctrl-t,ctrl-x,ctrl-r"
+	local QUERY
+	local DIRS=()
+	local FZFOPTS
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-x|--debug)
+				trap 'trap - RETURN INT; set +o xtrace' RETURN INT
+				set -o xtrace
+				;;
+			--bind)
+				KEYBIND+="$2",
+				shift
+				;;
+			--bind=*)
+				KEYBIND+="${ARG#*=}",
+				shift
+				;;
+			-r|--recursive)
+				RECURSIVE=--recursive
+				;;
+			--follow|--follow-symlink)
+				FOLLOW=--follow
+				;;
+			--no-follow|--no-follow-symlink)
+				FOLLOW=""
+				;;
+			-t|--type)
+				TYPE="$2"
+				shift
+				;;
+			--type=*)
+				TYPE="${ARG#*=}"
+				;;
+			--accept|--with-accept)
+				ACCEPT=yes
+				;;
+			--no-accept|--without-accept)
+				ACCEPT=no
+				;;
+			-1|--oneline)
+				ONELINE=yes
+				;;
+			-d|--directory)
+				DIRS+=("$2")
+				shift
+				;;
+			-q|--query)
+				QUERY="$2"
+				shift
+				;;
+			*)
+				if [ -z "${QUERY:-}" ]; then
+					QUERY="$ARG"
+				else
+					DIRS+=("$ARG")
+				fi
+				;;
+		esac
+		shift
+	done
+	if ! stdin-is-tty || ! stdout-is-tty; then
+		: TODO
+		# NOTE: 純粋なfind()として使いたいケースがある
+		# FZF_DEFAULT_OPTS="$FZF_REPEATS_OPTS --multi --header='$HEADER' --query='${QUERY:-}' --expect=$FZF_EXPECT_KEY" fzf-find ${RECURSIVE:+"$RECURSIVE"} --"$TYPE" ${DIRS[@]:+"${DIRS[@]}"}
+		# return
+	fi
+
+	if [ "${RECURSIVE:-}" = auto ]; then
+		if [ -n "${QUERY:-}" ]; then
+			RECURSIVE=--recursive
+		else
+			RECURSIVE=""
+		fi
+	fi
+	if [ "${FOLLOW:-}" = auto ]; then
+		if [ -n "${QUERY:-}" ]; then
+			FOLLOW=""
+		else
+			FOLLOW=--follow
+		fi
+	fi
+
+	local KEY ACTION
+	while IFS=: read -r KEY ACTION; do
+		[ -n "${KEY:-}" ] || continue
+		BINDMAP["$KEY"]="$ACTION"
+		[[ "${FZF_EXPECT_KEY:-}" =~ (^|[$IFS])$KEY($|[$IFS]) ]] && continue
+		FZF_EXPECT_KEY="$KEY","${FZF_EXPECT_KEY:-}"
+	done <<< "${KEYBIND//,/$'\n'}"
+
+	if [ -z "${QUERY:-}" ]; then
+		FZFOPTS+=" --exit-0"
+	fi
+
+	local FZF_RESULT INFO KEY ENTRIES
+	local HEADER="($TYPE${RECURSIVE:++r}${FOLLOW:++L})"
+	while true; do
+		FZF_RESULT="$(FZF_DEFAULT_OPTS="$FZF_REPEATS_OPTS --multi --header='$HEADER' --query='${QUERY:+$QUERY }' --expect=$FZF_EXPECT_KEY" fzf-find ${RECURSIVE:+"$RECURSIVE"} ${FOLLOW:+"$FOLLOW"} --"$TYPE" ${DIRS[@]:+"${DIRS[@]}"})"
+		[ $? = 130 ] && return 0
+
+		readarray -t INFO <<< "$FZF_RESULT"
+		QUERY="${INFO[0]}"
+		KEY="${INFO[1]}"
+		ENTRIES=("${INFO[@]:2}")
+
+		case "$KEY" in
+			ctrl-t)
+				TYPE="$(fzf-rotate-filetype "$TYPE")"
+				HEADER="($TYPE${RECURSIVE:++r}${FOLLOW:++L})"
+				FZFOPTS="${FZFOPTS//--exit-0/}"
+				continue
+				;;
+			ctrl-r)
+				# TODO: 関数化
+				if [ -z "$RECURSIVE" ] && [ -z "$FOLLOW" ]; then
+					RECURSIVE=--recursive
+				elif [ -n "$RECURSIVE" ] && [ -z "$FOLLOW" ]; then
+					FOLLOW=--follow
+				elif [ -n "$RECURSIVE" ] && [ -n "$FOLLOW" ]; then
+					RECURSIVE=""
+				elif [ -z "$RECURSIVE" ] && [ -n "$FOLLOW" ]; then
+					FOLLOW=""
+				fi
+				HEADER="($TYPE${RECURSIVE:++r}${FOLLOW:++L})"
+				FZFOPTS="${FZFOPTS//--exit-0/}"
+				continue
+				;;
+		esac
+		[ ${#ENTRIES[@]} = 0 ] && break
+
+		case "$KEY" in
+			ctrl-d)
+				if [ -n "${BINDMAP[$KEY]:-}" ]; then
+					eval "${BINDMAP[$KEY]:-}" "${ENTRIES[@]}"
+				else
+					cd "${ENTRIES[@]}" || return
+				fi
+				break
+				;;
+			ctrl-e)
+				if [ -n "${BINDMAP[$KEY]:-}" ]; then
+					eval "${BINDMAP[$KEY]:-}" "${ENTRIES[@]}"
+				else
+					local CMD=()
+					read -r -a CMD <<< "${EDITOR:-vi}"
+					history-append --eval "${CMD[@]}" "${ENTRIES[@]}"
+					"${CMD[@]}" "${ENTRIES[@]}" < /dev/tty > /dev/tty
+				fi
+				;;
+			ctrl-l)
+				if [ -n "${BINDMAP[$KEY]:-}" ]; then
+					eval "${BINDMAP[$KEY]:-}" "${ENTRIES[@]}"
+				else
+					history-append --eval "${PAGER:-less}" "${ENTRIES[@]}"
+					LESS="$FZF_LESS_OPTS" command "${PAGER:-less}" "${ENTRIES[@]}" < /dev/tty > /dev/tty
+				fi
+				;;
+			ctrl-s) # show
+				if [ -n "${BINDMAP[$KEY]:-}" ]; then
+					eval "${BINDMAP[$KEY]:-}" "${ENTRIES[@]}"
+				else
+					command cat "${ENTRIES[@]}" > /dev/tty
+				fi
+				break
+				;;
+			ctrl-x)
+				if [ -n "${BINDMAP[$KEY]:-}" ]; then
+					eval "${BINDMAP[$KEY]:-}" "${ENTRIES[@]}"
+				else
+					unar "${ENTRIES[@]}" < /dev/tty > /dev/tty
+				fi
+				;;
+			ctrl-y)
+				if [ -n "${BINDMAP[$KEY]:-}" ]; then
+					eval "${BINDMAP[$KEY]:-}" "${ENTRIES[@]}"
+				else
+					cbcopy "${ENTRIES[@]}"
+				fi
+				break
+				;;
+			*)
+				if [ -n "${KEY:-}" ] && [ -n "${BINDMAP[$KEY]:-}" ]; then
+					eval "${BINDMAP[$KEY]:-}" "${ENTRIES[@]}"
+				else
+					local ACCEPTED=no
+					if [ "$ACCEPT" = yes ]; then
+						if [ ${#ENTRIES[@]} = 1 ] && [ -d "${ENTRIES[0]}" ]; then
+							cbcopy "${ENTRIES[@]}"
+							history-append --eval cd "${ENTRIES[@]}"
+							cd "${ENTRIES[0]}" || return
+							ACCEPTED=yes
+						elif ! nkf -g "${ENTRIES[@]}" | command grep -Fwq BINARY; then
+							cbcopy "${ENTRIES[@]}"
+							history-append --eval "${EDITOR:-vi}" "${ENTRIES[@]}"
+							${EDITOR:-vi} "${ENTRIES[@]}" < /dev/tty > /dev/tty
+							ACCEPTED=yes
+						fi
+					fi
+					if [ "$ACCEPTED" = no ]; then
+						cbcopy "${ENTRIES[@]}"
+						if [ "$ONELINE" = yes ]; then
+							echo "${ENTRIES[@]}"
+						else
+							for E in "${ENTRIES[@]}"; do echo "$E"; done
+						fi
+					fi
+				fi
+				break
+				;;
+		esac
+	done
+}
+alias f='fzf-select --type=file'
+alias d='fzf-select --type=directory'
+
+function fzf-search() {
+	local ENGINE=ag
+	local PATTERN
+	local TARGETS=()
+	local ENGINEOPTS=()
+	local ACCEPT=yes
+	local ACCEPT_ALL=no
+	local NOPAGER=no
+	local ONLY_INFO
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-x|--debug)
+				# XXX: -x は grep, --debug は ag と干渉している
+				trap 'trap - RETURN INT; set +o xtrace' RETURN INT
+				set -o xtrace
+				;;
+			--all)
+				ACCEPT_ALL=yes
+				;;
+			-e|--regexp)
+				PATTERN+=${PATTERN:+|}"$2"
+				ENGINEOPTS+=("$ARG" "$2")
+				shift
+				;;
+			--regexp=*)
+				PATTERN+=${PATTERN:+|}"${ARG#*=}"
+				ENGINEOPTS+=("$ARG")
+				;;
+			--engine)
+				ENGINE="$2"
+				shift
+				;;
+			--engine=*)
+				ENGINE="${ARG#*=}"
+				;;
+			--ag|--grep|--rg|--pt)
+				ENGINE="${ARG#--}"
+				;;
+			--list-file-types|--help|-l|--files-with-matches)
+				NOPAGER=yes
+				ENGINEOPTS+=("$ARG")
+				ONLY_INFO=yes
+				;;
+			-1|--oneline)
+				NOPAGER=yes
+				ENGINEOPTS+=("$ARG")
+				;;
+			--no-pager|--nopager)
+				NOPAGER=yes
+				;;
+			--no-accept|--without-accept)
+				ACCEPT=no
+				;;
+			--)
+				PATTERN="$2"
+				TARGETS+=("${@:3}")
+				ENGINEOPTS+=("$@")
+				break
+				;;
+			-*)
+				# TODO: support option that requires argument
+				ENGINEOPTS+=("$ARG")
+				;;
+			*)
+				if [ -z "$PATTERN" ]; then
+					PATTERN="$ARG"
+					ENGINEOPTS+=("$ARG")
+				else
+					TARGETS+=("$ARG")
+					ENGINEOPTS+=("$ARG")
+				fi
+				;;
+		esac
+		shift
+	done
+	if [ -z "${ONLY_INFO:-}" ] && [ -z "${PATTERN:-}" ]; then
+		echo "Usage: ${FUNCNAME[0]} [OPTION] PATTERN" >&2
+		return 255
+	fi
+	if [ "$ENGINE" = ag ]; then
+		if [ "${NOPAGER:-}" = yes ]; then
+			ENGINEOPTS+=(--no-pager)
+		fi
+	fi
+	local NEEDS_COLOROPT=yes
+	if [[ "${ENGINEOPTS[*]}" =~ (^|[$IFS])--(colou?r|no-?color)($|[$IFS]) ]]; then
+		NEEDS_COLOROPT=no
+	fi
+	# NOTE: aliasでag()をfzf-search()に向けているが、純粋なag()として使いたいケースがある
+	if [ "${NOPAGER:-}" = yes ] || ! stdin-is-tty || ! stdout-is-tty; then
+		local COLOROPT=
+		if [ "${NEEDS_COLOROPT:-}" = yes ]; then
+			stdout-is-tty && COLOROPT=auto || COLOROPT=never
+		fi
+		"$ENGINE" ${COLOROPT:+"--color=$COLOROPT"} "${ENGINEOPTS[@]}"
+		return
+	fi
+	if [ "${NEEDS_COLOROPT:-}" = yes ]; then
+		ENGINEOPTS+=("--color=always")
+	fi
+
+	case "$ENGINE" in
+		ag)
+			if [ ${#TARGETS[@]} = 1 ]; then
+				# NOTE: ファイル名を必ず出力させるため、/dev/nullを足して複数ファイルにする
+				ENGINEOPTS+=(/dev/null)
+			fi
+			ENGINEOPTS+=(--no-pager)
+			;;
+		grep)
+			ENGINEOPTS+=(--line-number --with-filename --recursive)
+			;;
+		rg)
+			ENGINEOPTS+=(--line-number --with-filename)
+			;;
+		pt)
+			ENGINEOPTS+=(--line-number --with-filename)
+			;;
+	esac
+
+	local FZFOPTS="$FZF_REPEATS_OPTS"
+	if [ "${ACCEPT_ALL:-}" = yes ]; then
+		if [ "${PATTERN:0:1}" = ^ ]; then
+			# NOTE: ^PATTERN は FILEPATH:LINENO:PATTERN の形式になるので、補正する
+			# XXX: 部分的な対応
+			FZFOPTS+=" --filter=:${PATTERN:1}"
+		else
+			FZFOPTS+=" --filter=$PATTERN"
+		fi
+	fi
+
+	# NOTE: １回目の結果が１行だけなのであれば、即lessで開く
+	local SELECT1
+	if "$ENGINE" "${ENGINEOPTS[@]}" --color=never 2>/dev/null | command awk 'BEGIN {e=1} NR == 1 {e=0} NR == 2 {e=1; exit} END{exit e}'; then
+		SELECT1=--select-1
+	fi
+
+	local FZF_RESULT INFO QUERY KEY ENTRIES
+	local GREPOPTS=(-i -C $((${LINES:-100}*2/3)) "--color=always" --extended-regexp)
+	while FZF_RESULT="$($ENGINE "${ENGINEOPTS[@]}" | PATTERN="$PATTERN" GREPOPTS="${GREPOPTS[*]}" FZF_DEFAULT_OPTS="$FZFOPTS${SELECT1:+ $SELECT1} --exit-0" fzf --expect=ctrl-l,ctrl-e,ctrl-y,ctrl-o,ctrl-s --reverse --multi --query="$QUERY" --preview='IFS=: read -r FILE LINE DUMMY <<<{1}; less "$FILE" | cat -n | grep $GREPOPTS -m1 "^\s+${LINE}\s" | perl -s -nlpe '\''BEGIN{$e = $p; $e =~ s/(.)/$s\Q\1/g} s/$e/\x1b\[01;31m$p\x1b[0m/;'\'' -- -p="$PATTERN" -s=$'\''(\033\[([0-9]+(;[0-9]+)*)*m)*'\''')"; do
+		readarray -t INFO <<< "$FZF_RESULT"
+		QUERY="${INFO[0]}"
+		if [ "${ACCEPT_ALL:-}" = yes ]; then
+			KEY=""
+			ENTRIES=("${INFO[@]:1}")
+		else
+			KEY="${INFO[1]}"
+			ENTRIES=("${INFO[@]:2}")
+		fi
+		[ ${#ENTRIES[@]} = 0 ] && break
+
+		# needs-uniq: 1 < lines && cmd == less or cmd == yank
+		local E
+		if [ "$ACCEPT" = no ] || [[ "$KEY" =~ ^(ctrl-y|ctrl-o)$ ]] || [[ ${#ENTRIES[@]} != 1 && "$KEY" = ctrl-l ]]; then
+			# NOTE: accept しない場合と、yank かless(複数行マッチ) の場合の行情報は不要なので、ファイル名にuniqする
+			read -r -a ENTRIES < <(for E in "${ENTRIES[@]}"; do echo "$E"; done | command awk -F: '{if (! a[$1]++) print $1}')
+		else
+			# NOTE: 同一ファイルの複数マッチも纏める
+			read -r -a ENTRIES < <(for E in "${ENTRIES[@]}"; do echo "$E"; done | command awk -F: '{if (! a[$1]++) printf("+%s %s ", $2, $1)}')
+		fi
+		case "$KEY" in
+			ctrl-s)
+				"$ENGINE" "${ENGINEOPTS[@]}"
+				break
+				;;
+			ctrl-o) # oneline
+				echo-with-cbcopy "${ENTRIES[@]}"
+				break
+				;;
+			ctrl-y) # yank
+				cbcopy "${ENTRIES[@]}"
+				break
+				;;
+			ctrl-e)
+				history-append --eval "${EDITOR:-vi}" "${ENTRIES[@]}"
+				${EDITOR:-vi} "${ENTRIES[@]}" < /dev/tty > /dev/tty
+				;;
+			ctrl-l)
+				history-append --eval "${PAGER:-less}" "${ENTRIES[@]}"
+				LESS="$FZF_LESS_OPTS" command "${PAGER:-less}" -p "$PATTERN" "${ENTRIES[@]}" < /dev/tty > /dev/tty
+				;;
+			*)
+				if [ "$ACCEPT" = yes ]; then
+					if [ -n "${SELECT1:-}" ]; then
+						history-append --eval "${PAGER:-less}" "${ENTRIES[@]}"
+						LESS="$FZF_LESS_OPTS" command "${PAGER:-less}" "${ENTRIES[@]}" < /dev/tty > /dev/tty
+					else
+						history-append --eval "${EDITOR:-vi}" "${ENTRIES[@]}"
+						${EDITOR:-vi} "${ENTRIES[@]}" < /dev/tty > /dev/tty
+					fi
+				else
+					echo "${ENTRIES[@]}"
+				fi
+				break
+				;;
+		esac
+		SELECT1=""
+	done
+}
+
+alias fzf-rg='fzf-search --engine=rg'
+alias rg='fzf-rg'
+alias ra='fzf-rg --all'
+
+alias fzf-pt='fzf-search --engine=pt'
+alias fp='fzf-pt'
+alias fpt='fzf-pt'
+alias pa='fzf-pt --all'
+
+alias fzf-ag='fzf-search --engine=ag'
+alias ae='fzf-ag'
+alias aa='fzf-ag --all'
+alias aghe='ae'
+alias ag='fzf-ag'
+
+alias fzf-grep='fzf-search --engine=grep'
+alias ge='fzf-grep'
+alias ga='fzf-grep --all'
+
+# Usage: $FUNCNAME [QUERY|CMDOPTION...] [--] [FZFOPTION]...
+function fzf-rm() {
+	local QUERY
+	local FZFOPTS=()
+	local CMDOPTS=()
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			--)
+				FZFOPTS+=("${@:2}")
+				break
+				;;
+			-*)
+				CMDOPTS+=("$ARG")
+				;;
+			*)
+				if [ -n "${QUERY:-}" ]; then
+					error "garbage argument: '$ARG'"
+					return 255
+				fi
+				QUERY="$ARG"
+				;;
+		esac
+		shift
+	done
+	local FILES=()
+	readarray -t FILES < <(FZF_DEFAULT_OPTS="$FZF_ONESHOT_OPTS --multi --query='${QUERY:+$QUERY }'" fzf-find --file ${FZFOPTS[@]:+"${FZFOPTS[@]}"})
+	[ "${#FILES[@]}" = 0 ] && return 0
+
+	command-exec --echo rm ${CMDOPTS[@]:+"${CMDOPTS[@]}"} "${FILES[@]}"
+}
+alias frm='fzf-rm'
+alias fremove='fzf-rm'
+
+# Usage: $FUNCNAME [QUERY|CMDOPTION...] [--] [FZFOPTION]...
+function fzf-strace() {
+	local QUERY
+	local FZFOPTS=(--no-multi)
+	local CMDOPTS=(-tt -s 200)
+	local PSOPTS=()
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-S|-o|-s|-e|-a|-P|-I|-b|-U|-p|-E)
+				CMDOPTS+=("$ARG" "$2")
+				shift
+				;;
+			-L)
+				PSOPTS+=("$ARG")
+				;;
+			--)
+				FZFOPTS+=("${@:2}")
+				break
+				;;
+			--fzf-options)
+				local _OPTS
+				read -r -a _OPTS <<< "$2"
+				FZFOPTS+=("${_OPTS[@]}")
+				shift
+				;;
+			--fzf-options=*)
+				local _OPTS
+				read -r -a _OPTS <<< "${ARG#*=}"
+				FZFOPTS+=("${_OPTS[@]}")
+				;;
+			-*)
+				CMDOPTS+=("$ARG")
+				;;
+			*)
+				if [ -n "${QUERY:-}" ]; then
+					error "garbage argument: '$ARG'"
+					return 255
+				fi
+				QUERY="$ARG"
+				;;
+		esac
+		shift
+	done
+	local PID
+	read -r PID < <(fzf-ps "${PSOPTS[@]}" --query=${QUERY:+"$QUERY "} -- ${FZFOPTS[@]:+"${FZFOPTS[@]}"})
+	[ -z "${PID:-}" ] && return 0
+
+	echo sudo strace ${CMDOPTS[@]:+"${CMDOPTS[@]}"} -p "$PID"
+	sudo strace ${CMDOPTS[@]:+"${CMDOPTS[@]}"} -p "$PID"
+}
+alias fstrace='fzf-strace'
+complete -F _strace fzf-strace fstrace
+
+# Usage: $FUNCNAME [QUERY|CMDOPTION...] [--] [FZFOPTION]...
+function fzf-ps() {
+	local QUERY
+	local FZFOPTS=(--multi)
+	local CMDOPTS=()
+	local PSFMT
+	local MULTI=yes
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			--)
+				FZFOPTS+=("${@:2}")
+				break
+				;;
+			--fzf-options)
+				local _OPTS
+				read -r -a _OPTS <<< "$2"
+				FZFOPTS+=("${_OPTS[@]}")
+				shift
+				;;
+			--fzf-options=*)
+				local _OPTS
+				read -r -a _OPTS <<< "${ARG#*=}"
+				FZFOPTS+=("${_OPTS[@]}")
+				;;
+			--multi|--no-multi)
+				FZFOPTS+=("$ARG")
+				;;
+			--query)
+				QUERY="$2"
+				shift
+				;;
+			--query=*)
+				QUERY="${ARG#*=}"
+				;;
+			-[oO])
+				PSFMT+=${PSFMT:+","}"$2"
+				shift
+				;;
+			-[oO][[:alnum:]]*)
+				PSFMT+=${PSFMT:+","}"${1:2}"
+				;;
+			-[[:alnum:]][[:alnum:]]*)
+				local NEWARGS
+				readarray -t NEWARGS < <(echo -n "${ARG#-}" | sed -rn 's/(.)/-\1\n/gp')
+				set -- "${NEWARGS[@]}" "${@:2}" # shift
+				continue
+				;;
+			-*)
+				CMDOPTS+=("$ARG")
+				;;
+			*)
+				if [ -n "${QUERY:-}" ]; then
+					error "garbage argument: '$ARG'"
+					return 255
+				fi
+				QUERY="$ARG"
+				;;
+		esac
+		shift
+	done
+	QUERY+=" ![ !fzf"
+	if [ -n "${PSFMT:-}" ]; then
+		CMDOPTS+=(-e -O "$PSFMT")
+	else
+		CMDOPTS+=(-elf)
+	fi
+	local _LINES=()
+	readarray -t _LINES < <(command ps "${CMDOPTS[@]:--elf}" | FZF_DEFAULT_OPTS="$FZF_ONESHOT_OPTS" fzf --header-lines=1 --preview="" --query=${QUERY:+"$QUERY "} ${FZFOPTS[@]:+"${FZFOPTS[@]}"})
+	[ "${#_LINES[@]}" = 0 ] && return 0
+
+	# TODO: 行全体の表示: C-s or --raw
+	local PIDS=() LINE E=()
+	for LINE in "${_LINES[@]}"; do
+		read -r -a E <<< "$LINE"
+		if [ -n "${PSFMT:-}" ]; then
+			PIDS+=("${E[0]}")
+		else
+			PIDS+=("${E[3]}")
+		fi
+	done
+	echo-with-cbcopy "${PIDS[@]}"
+}
+alias fps='fzf-ps'
+complete -F _ps fzf-ps fps
+
+function fzf-history() {
+	local ACCEPT=yes
+	local CMD
+	local HISTMAX=10000
+	shopt -u nocaseglob nocasematch
+
+	CMD="$(HISTTIMEFORMAT="" history "$HISTMAX" | tac | sed -e 's/^ *[0-9]\{1,\}\*\{0,1\} *//' -e 's/ *$//' | command awk '!a[$0]++' | \
+			         FZF_DEFAULT_OPTS="${FZF_TMUX_HEIGHT:+--height "$FZF_TMUX_HEIGHT"} $FZF_DEFAULT_OPTS --sync --nth=2..,.. --tiebreak=index --bind=ctrl-r:toggle-sort $FZF_CTRL_R_OPTS +m --preview=''" fzf --query="$READLINE_LINE")"
+	[ -n "${CMD:-}" ] || return 0
+
+	if [ $ACCEPT = yes ]; then
+		command history -s "$CMD"
+		echo "$CMD"
+		eval "$CMD" # NOTE: eval to execute alias
+		echo -n
+	else
+		READLINE_LINE="$CMD"
+		READLINE_POINT=${#CMD}
+	fi
+}
+[ -n "${PS1:-}" ] && executable fzf && bind -x '"\C-x\C-r":fzf-history'
+
+fzf-rotate-filetype() {
+	local TYPES=(all file directory)
+	local FIRST="$1"
+	# all -> file -> derectory
+	for ((I = 0; I < ${#TYPES[@]}; I++)); do
+		[ "$FIRST" = "${TYPES[$I]}" ] || continue
+
+		echo "${TYPES[$(((I + 1) % (${#TYPES[@]})))]}"
+		break
+	done
+}
+
+fzf-file-widget() {
+	# NOTE: コマンド毎に候補にするファイルタイプを区別
+	local CMD CMDS=()
+	read -r -a CMDS <<< "$READLINE_LINE"
+	for CMD in "${CMDS[@]:-}"; do
+		case "$CMD" in
+			*=*)
+			;;
+			*)
+				break
+				;;
+		esac
+	done
+	local TYPE=all
+	case "${CMD:-}" in
+		"cd")
+			TYPE=directory
+			;;
+		unar)
+			TYPE="file"
+			;;
+		*)
+			;;
+	esac
+
+	local QUERY DIR READLINE_BASEPOINT
+	# NOTE: 途中まで入力されているケースはQUERYを入力
+	if ((0 < ${READLINE_POINT:-0})); then
+		local P
+		for ((P = READLINE_POINT; 0 < P; P--)); do
+			local C="${READLINE_LINE:$P-1:1}"
+			if [[ "$C" =~ [=$IFS] ]]; then
+				break
+			fi
+		done
+		local ITEM="${READLINE_LINE:$P:$((READLINE_POINT - P))}"
+		if [ -d "$ITEM" ]; then
+			DIR="${ITEM%/}"
+		elif [[ "$ITEM" == */* ]]; then
+			QUERY="${ITEM##*/}"
+			DIR="${ITEM%/*}"
+		else
+			QUERY="$ITEM"
+		fi
+		READLINE_BASEPOINT="$P"
+	fi
+	if [ -n "${DIR:-}" ] && [ ! -e "$DIR" ]; then
+		DIR="$(eval echo "$DIR")"
+		if [[ "$DIR" =~ ^[^./]+ ]]; then
+			# NOTE: ディレクトリが指定されているのに存在しない場合はCDPATHから探す
+			local PARENTDIRS=() PARENTDIR
+			readarray -t PARENTDIRS <<< "${CDPATH//:/$'\n'}"
+			for PARENTDIR in ${PARENTDIRS[@]:+"${PARENTDIRS[@]}"}; do
+				local _DIR="$PARENTDIR"/"${DIR%%/*}"
+				[ -e "$_DIR" ] || continue
+				DIR="$_DIR"
+				break
+			done
+		fi
+	fi
+
+	local FZFOPTS
+	FZFOPTS="$FZF_REPEATS_OPTS --select-1 --expect=ctrl-r,ctrl-t,ctrl-s"
+	if [ -n "${QUERY:-}" ]; then
+		FZFOPTS+=" --exit-0"
+	fi
+
+	local FZF_RESULT INFO KEY ENTRIES
+	local RECURSIVE MULTI=--multi
+	local HEADER="($TYPE${RECURSIVE:++r}${FOLLOW:++L}${MULTI:++m})"
+	# 隠しファイル指定の場合は"."始まりのファイルも対象にする
+	local HIDDENOPTS=()
+	if [[ "${QUERY:-}" == .* ]]; then
+		HIDDENOPTS=(--hidden)
+	else
+		HIDDENOPTS=("--exclude-regex=.*/([.~#][^\/]+|.*\.([ao]|obj|save|b[a]k|or[i]g|rej|swp|rpm(orig|new|save))$|.*~$)")
+		HIDDENOPTS+=("--exclude=*.d")
+	fi
+	local PROMPT=""
+	if ((${BASH_VERSINFO[0]:-0} < 4)) || [[ "${DIR:-.}" == [^/]* ]]; then
+		PROMPT="--prompt='$PWD > '"
+	fi
+	while true; do
+		FZF_RESULT="$(FZF_DEFAULT_OPTS="$FZFOPTS ${PROMPT:+"$PROMPT" }${MULTI:+"$MULTI" }--header='$HEADER' --query='${QUERY:+$QUERY }'" fzf-find --sort=ctime ${RECURSIVE:+"$RECURSIVE"} "${HIDDENOPTS[@]}" --exclude-dir=branches --$TYPE "${DIR:-.}")"
+		[ $? = 130 ] && return 0
+
+		readarray -t INFO <<< "$FZF_RESULT"
+		QUERY="${INFO[0]}"
+		KEY="${INFO[1]}"
+		ENTRIES=("${INFO[@]:2}")
+		case "$KEY" in
+			ctrl-t)
+				TYPE="$(fzf-rotate-filetype "$TYPE")"
+				HEADER="($TYPE${RECURSIVE:++r}${FOLLOW:++L}${MULTI:++m})"
+				FZFOPTS="${FZFOPTS//--exit-0/}"
+				;;
+			ctrl-r)
+				[ -z "$RECURSIVE" ] && RECURSIVE=--recursive || RECURSIVE=""
+				HEADER="($TYPE${RECURSIVE:++r}${FOLLOW:++L}${MULTI:++m})"
+				FZFOPTS="${FZFOPTS//--exit-0/}"
+				;;
+			ctrl-s)
+				[ -z "$MULTI" ] && MULTI=--multi || MULTI=""
+				HEADER="($TYPE${RECURSIVE:++r}${FOLLOW:++L}${MULTI:++m})"
+				FZFOPTS="${FZFOPTS//--exit-0/}"
+				;;
+			*)
+				break
+				;;
+		esac
+	done
+	[ "${#ENTRIES[@]}" = 0 ] && return 0
+
+	local SELECTED
+	SELECTED="$(for ((I = 0; I < ${#ENTRIES[@]}; I++)); do ((0 < I)) && printf " "; printf "%q" "${ENTRIES[$I]}"; done)"
+	READLINE_LINE="${READLINE_LINE:0:$READLINE_BASEPOINT}${READLINE_LINE:$READLINE_POINT}"
+	READLINE_POINT="$READLINE_BASEPOINT"
+	READLINE_LINE="${READLINE_LINE:0:$READLINE_POINT}$SELECTED${READLINE_LINE:$READLINE_POINT}"
+	READLINE_POINT=$(( READLINE_POINT + $(echo -n "$SELECTED" | command wc -c) ))
+	if ((${BASH_VERSINFO[0]:-0} < 4)); then
+		history-append --echo "$READLINE_LINE"
+		unset READLINE_LINE READLINE_POINT
+	fi
+}
+[ -n "${PS1:-}" ] && executable fzf && bind -x '"\C-t":fzf-file-widget'
+
+fzf-oneliner() {
+	local ONELINERS=~/.oneliner
+	[ -s "$ONELINERS" ] || return 0
+
+	local CMD QUERY KEY FZF_RESULT ACCEPT ENTRIES
+	while ACCEPT=no; FZF_RESULT="$(sed -r \
+	    -e '/^#/d' \
+	    -e '/^$/d' \
+	    -e 's/^(\[.*?\]) (.*)$/\1\t\2/' \
+	    -e 's/(\[.*?\])/\x1b[31m\1\x1b[m/' \
+	    -e 's/^(: ?)(.*)$/\1\x1b[30;47;1m\2\x1b[m/' \
+	    -e 's/^(.*)([[:blank:]]#[[:blank:]]?.*)$/\1\x1b[30;1m\2\x1b[m/' \
+	    -e 's/(!)/\x1b[31;1m\1\x1b[m/' \
+	    -e 's/(\|| [A-Z]+ [A-Z]+| [A-Z]+ )/\x1b[35;1m\1\x1b[m/g' \
+	    "$ONELINERS" \
+	    | FZF_DEFAULT_OPTS="$FZF_REPEATS_OPTS" fzf --preview= --tac --query="$QUERY" --expect=ctrl-e,ctrl-u,ctrl-y)"; do
+		readarray -t INFO <<< "$FZF_RESULT"
+		QUERY="${INFO[0]}"
+		KEY="${INFO[1]}"
+		ENTRIES=("${INFO[@]:2}")
+		[ ${#ENTRIES[@]} = 0 ] && continue
+
+		case "$KEY" in
+			ctrl-e)
+				${EDITOR:-vi} "$ONELINERS" < /dev/tty > /dev/tty
+				;;
+			ctrl-u) # exec
+				CMD="$(perl -pe 's/^(\[.*?\])\t(.*)$/$2/' <<< "${ENTRIES[@]}")"
+				CMD="${CMD%!*}"
+				ACCEPT=yes
+				break
+				;;
+			ctrl-y) # yank
+				CMD="$(perl -pe 's/^(\[.*?\])\t(.*)$/$2/' <<< "${ENTRIES[@]}")"
+				CMD="${CMD%!*}"
+				cbcopy "$(perl -pe 's/\n/; /' <<< "$CMD")"
+				;;
+			*)
+				CMD="$(perl -pe 's/^(\[.*?\])\t(.*)$/$2/' <<< "${ENTRIES[@]}")"
+				if [[ $CMD =~ "!$" || $CMD =~ ![[:space:]]*#.*$ ]]; then
+					CMD="${CMD%!*}"
+					ACCEPT=yes
+				fi
+				break
+				;;
+		esac
+	done
+	[ -n "${CMD:-}" ] || return 0
+
+	if [ $ACCEPT = yes ]; then
+		command history -s "$CMD"
+		eval "$CMD" # NOTE: eval to execute alias
+	else
+		READLINE_LINE="$(tr -d '@' <<< "$CMD" | perl -pe 's/\n/; /' | sed -e 's/; $//')"
+		local CURSOR="${CMD%%@*}"
+		READLINE_POINT=${#CURSOR}
+		if ((${BASH_VERSINFO[0]:-0} < 4)); then
+			history-append --echo "$READLINE_LINE"
+			unset READLINE_LINE READLINE_POINT
+		fi
+	fi
+}
+[ -n "${PS1:-}" ] && executable fzf && bind -x '"\C-x\C-o":fzf-oneliner'
+[ -n "${PS1:-}" ] && executable fzf && bind -x '"\C-o":fzf-oneliner'
+
+function finder() {
+	local DIR="${1:-$PWD}"
+	local FINDER_MODE=tree
+	local QUERY KEY FZF_RESULT ENTRIES
+	# TODO: preview ... error: unable to indentify '|-- .bzrignore'
+	while clear; FZF_RESULT="$(
+	if [ "$FINDER_MODE" = tree ]; then \
+		tree -a -C -I ".bzr" --charset=C "$DIR"; \
+	else \
+		(builtin cd "$DIR"; \
+		 find . -path '*.bzr*' -prune -o -not -readable -prune -o -print \
+			 | while read -r LINE; do [ -d "$LINE" ] && echo "$LINE/" || echo "$LINE"; done \
+			 | sed -e 's|^\./||;/^$/d' \
+			 | perl -pe 's/^(.*\/)(.*)$/\033[34m$1\033[m$2/' \
+		); \
+	fi \
+	| FZF_DEFAULT_OPTS="$FZF_REPEATS_OPTS" fzf --reverse --query="$QUERY" --expect=ctrl-v,ctrl-r,ctrl-y)"; do
+		readarray -t INFO <<< "$FZF_RESULT"
+		QUERY="${INFO[0]}"
+		KEY="${INFO[1]}"
+		ENTRIES=("${INFO[@]:2}")
+		[ ${#ENTRIES[@]} = 0 ] && continue
+		TARGET="$(
+		if [ "$FINDER_MODE" = tree ]; then
+			readarray ARR < <(tree -a -I ".bzr" --charset=C "$DIR")
+			for ((i = 1; i <= ${#ARR[@]}; i++)); do
+				if [ "${ARR[i]}" = "${ENTRIES[0]}" ]; then
+					n=$i
+					break
+				fi
+			done
+			readarray ARR < <(tree -f -a -I ".bzr" --charset=C "$DIR")
+			perl -pe 's/^(( *(\||`)( |`|-)+)+)//' <<< "${ARR[n]}" \
+				| sed -e 's/ -> .*$//'
+		else
+			echo "$DIR"/"${ENTRIES[0]}"
+		fi
+		)"
+
+		case "$KEY" in
+			ctrl-r)
+				if [ $FINDER_MODE = list ]; then
+					FINDER_MODE=tree
+				else
+					FINDER_MODE=list
+				fi
+				;;
+			ctrl-v)
+				${EDITOR:-vi} "$TARGET"
+				;;
+			ctrl-y)
+				cbcopy "$TARGET"
+				break
+				;;
+			*)
+				cbcopy "${ENTRIES[@]}"
+				echo "$TARGET"
+				break
+				;;
+		esac
+	done
+}
+
+function _fzf-find() {
+	local cur
+	_init_completion || return
+
+	if [[ "$cur" == -* ]]; then
+		local extopts=(--all --directory --file --depth --maxdepth --mindepth --self --recursive --sort --include --exclude --include-dir --exclude-dir --include-regex --exclude-regex)
+		readarray -t -O "${#COMPREPLY[@]}" COMPREPLY < <(compgen -W "${extopts[*]}" -- "$cur")
+	else
+		_filedir
+	fi
+}
+complete -F _fzf-find fzf-find
+
+function _fzf-select() {
+	local cur
+	_init_completion || return
+
+	if [[ "$cur" == -* ]]; then
+		local extopts=(-x --debug --bind -r --recursive --follow --follow-symlink --no-follow --no-follow-symlink -t --type  --accept --with-accept --no-accept --without-accept -1 --oneline -d --directory -q --query)
+		readarray -t -O "${#COMPREPLY[@]}" COMPREPLY < <(compgen -W "${extopts[*]}" -- "$cur")
+	else
+		_filedir
+	fi
+}
+complete -F _fzf-select fzf-select
+
+function _fzf-search() {
+	_ag_org "$@"
+
+	# save original result
+	local compreply=("${COMPREPLY[@]}")
+
+	local cur
+	_init_completion || return
+
+	# restore original result
+	COMPREPLY=("${compreply[@]}")
+
+	if [[ "$cur" == -* ]]; then
+		local extopts=(--all -e --regexp --engine --ag --grep --no-accept)
+		readarray -t -O "${#COMPREPLY[@]}" COMPREPLY < <(compgen -W "${extopts[*]}" -- "$cur")
+	else
+		_filedir
+	fi
+}
+complete -F _fzf-search ae aa ge ga fzf-ag fzf-grep fzf-rg

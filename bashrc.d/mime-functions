@@ -1,0 +1,73 @@
+# -*-Shell-script-*-
+#
+# This file is not a stand-alone shell script.
+# This provides functions to file that source it.
+
+function mime-decode-subject() {
+	if [ -f "${1:-}" ]; then
+		command cat "$@"
+	elif [ -n "${1:-}" ]; then
+		echo -n "$*"
+	else
+		command cat
+	fi | perl -MEncode -snle 'print encode($charset, decode("MIME-Header", $_));' -- -charset="${LANG#*.}"
+}
+alias subjectdecode='mime-decode-subject'
+alias decodesubject='mime-decode-subject'
+
+function mime-encode() {
+	local TYPE=MIME-B
+	local CHARSET="${LANG#*.}"
+	local LANGUAGE
+	while [ $# != 0 ]; do
+		case "${1,,}" in
+			--charset)
+				CHARSET="$2"
+				shift
+				;;
+			--charset=*)
+				CHARSET="${1#*=}"
+				;;
+			--language)
+				LANGUAGE="$2"
+				shift
+				;;
+			--language=*)
+				LANGUAGE="${1#*=}"
+				;;
+			--url|--percent|--url-encode|--percent-encode|--urlencode|--percentencode)
+				TYPE=MIME-extended
+				;;
+			-b|--base64)
+				TYPE=MIME-B
+				;;
+			-q|--qp|--quoted-printable|--quotedprintable)
+				TYPE=MIME-Q
+				;;
+			*)
+				break
+				;;
+		esac
+		shift
+	done
+
+	if [ -f "${1:-}" ]; then
+		command cat "$@"
+	elif [ -n "${1:-}" ]; then
+		echo -n "$*"
+	else
+		command cat
+	fi | \
+		case "$TYPE" in
+			MIME-extended)
+				perl -MURI::Escape -snle 'printf "%s'"'"'%s'"'"'%s\n", $charset, $language, uri_escape($_);' -- -charset="$CHARSET" -language="${LANGUAGE:-}"
+				;;
+			*)
+				perl -MEncode -snle 'print encode($type, decode($charset, $_))' -- -type="$TYPE" -charset="$CHARSET"
+				;;
+
+		esac
+}
+alias mime-encode-base64='mime-encode --base64'
+alias mime-encode-qp='mime-encode --quoted-printable'
+alias mime-encode-percent='mime-encode --percent'

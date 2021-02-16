@@ -1,0 +1,46 @@
+# -*-Shell-script-*-
+#
+# This file is not a stand-alone shell script.
+# This provides environment about keybord that source it.
+
+if command tty | command grep -Fq /dev/tty && [ "$TERM" = linux ]; then
+	# for console setting
+
+	# Changes keybord repeat & delay
+	if command type kbdrate &>/dev/null; then
+		sudo kbdrate -d 180 -r 40 >/dev/null
+	else
+		sudo xset r rate 180 40 >/dev/null
+	fi
+elif command type setxkbmap &>/dev/null && [ -n "$DISPLAY" ]; then
+	# for terminal setting
+
+	# Switches nocaps -> ctrl
+	setxkbmap jp
+	setxkbmap -option ctrl:nocaps
+
+	# XXX: setxkbmapでやってるので不要？
+	# # Switches nocaps -> ctrl
+	# sudo loadkeys <<-EOF
+	# $(sudo dumpkeys | head -1)
+	# keycode 58 = Control        # CapsLock act as Ctrl
+	# EOF
+
+	# Changes keybord repeat & delay
+	sudo xset r rate 180 40 >/dev/null
+
+	# # Changes keybord map
+	# sudo xmodmap - <<-EOF
+	# keycode 101 = Alt_R
+	# keycode 102 = Alt_L
+	# add mod1 = Alt_R
+	# add mod1 = Alt_L
+	# EOF
+fi
+
+# Disables C-s
+if [ -t 0 ] && [[ $- == *i* ]]; then
+	# stty stop undef
+	# stty start undef
+	stty -ixon
+fi

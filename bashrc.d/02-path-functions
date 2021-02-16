@@ -1,0 +1,264 @@
+# -*-Shell-script-*-
+#
+# This file is not a stand-alone shell script.
+# This provides functions to path that source it.
+
+function path-normalize() {
+	local TARGET="${1:?error: Usage: ${FUNCNAME[0]} TARGET}"
+
+	# 1. 連続した // は / に纏める
+	while [[ "$TARGET" == *//* ]]; do
+		TARGET="${TARGET//\/\///}"
+	done
+
+	# 2. /./ は削除
+	while [[ "$TARGET" == */./* ]]; do
+		TARGET="${TARGET/\/.\///}"
+	done
+
+	# 3. ./.. は ./ を削除
+	if [[ $TARGET == ./?* ]]; then
+		TARGET="${TARGET#./}"
+	fi
+
+	# 4. 末尾の . は削除
+	if [[ $TARGET == *?/. ]]; then
+		TARGET="${TARGET%/.}"
+	fi
+
+	# 5. 末尾の / は削除
+	if [[ $TARGET == *?/ ]]; then
+		TARGET="${TARGET%/}"
+	fi
+
+	echo "$TARGET"
+}
+
+# NOTE: symlink と .. の相性問題を解決するための関数
+# PWDから辿った結果のパスが存在する場合はそのパスの絶対パスを返す
+# path-canonicalize -e --canonicalize-existing -P --no-dereference
+function path-resolve() {
+	local FULLPATH
+	local WITH_CDPATH=yes
+	local QUIET=no
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			--quiet)
+				QUIET=yes
+				;;
+			--without-cdpath|--no-cdpath)
+				WITH_CDPATH=no
+				;;
+			--)
+				shift
+				FULLPATH="${1:-}"
+				break
+				;;
+			*)
+				FULLPATH="$ARG"
+				break
+				;;
+		esac
+		shift
+	done
+	if [ -z "${FULLPATH:-}" ]; then
+		if [ "$QUIET" = no ]; then
+			error "Usage: ${FUNCNAME[0]} PATH"
+		fi
+		return 255
+	fi
+	local IFS=$'\n'
+
+	if [[ "$FULLPATH" =~ ^[^/] ]]; then
+		if [[ "$FULLPATH" == .* ]]; then
+			FULLPATH="$PWD"/"$FULLPATH"
+		elif [ -e "$PWD"/"$FULLPATH" ]; then
+			FULLPATH="$PWD"/"$FULLPATH"
+		elif [ "${WITH_CDPATH:-}" = yes ]; then
+			# 拡張: 相対パスの場合は $CDPATH からも探す
+			local BASEDIR
+			for BASEDIR in ${CDPATH//:/$'\n'} ""; do
+				if [ -e "$BASEDIR"/"$FULLPATH" ]; then
+					break
+				fi
+			done
+			if [ -n "$BASEDIR" ]; then
+				FULLPATH="$BASEDIR"/"$FULLPATH"
+			else
+				FULLPATH="$PWD"/"$FULLPATH" # failsafe
+			fi
+		fi
+	fi
+	FULLPATH="$(path-normalize "$FULLPATH")"
+
+	local result e
+	for e in ${FULLPATH//\//$'\n'}; do
+		[ "$e" = . ] && continue
+		if [ "$e" = .. ]; then
+			result="${result%/*}"
+			result="${result:-/}"
+		else
+			result+="/$e"
+		fi
+	done
+	[ "$FULLPATH" = / ] && result=/
+	[ -e "$result" ] || return 0 # NOTE: errexitで誤爆するので成功を返す
+
+	printf -- "%s\n" "$result"
+}
+
+if ! executable realpath && executable readlink; then
+	function realpath() {
+		# TODO:
+		local FOLLOW_SYMLINKS=yes
+		while [ $# != 0 ]; do
+			case "$1" in
+				-s|--strip|--no-symlinks)
+					FOLLOW_SYMLINKS=no;;
+				*)
+					break;;
+			esac
+			shift
+		done
+		if [ $FOLLOW_SYMLINKS = yes ]; then
+			readlink --canonicalize-missing "$@"
+		else
+			readlink "$@"
+		fi
+	}
+fi
+
+function path-prepend() {
+	local FORCE
+	if [[ "${1:-}" =~ ^(-f|--force)$ ]]; then
+		FORCE=yes
+		shift
+	fi
+	local DIRNAME="${1:?error: Usage ${FUNCNAME[0]} DIRNAME}"
+	local IFS=$'\n'
+
+	if [ "$FORCE" = yes ] && path-contains "$DIRNAME"; then
+		path-remove "$DIRNAME"
+	fi
+
+	local PATHS=("$DIRNAME" ${PATH//:/$'\n'})
+	eval PATH="$(IFS=":"; echo "${PATHS[*]}")"
+	export PATH
+}
+
+function path-append() {
+	local FORCE
+	if [[ "${1:-}" =~ ^(-f|--force)$ ]]; then
+		FORCE=yes
+		shift
+	fi
+	local DIRNAME="${1:?error: Usage ${FUNCNAME[0]} DIRNAME}"
+	local IFS=$'\n'
+
+	if [ "$FORCE" = yes ] && path-contains "$DIRNAME"; then
+		 path-remove "$DIRNAME"
+	fi
+
+	local PATHS=(${PATH//:/$'\n'} "$DIRNAME")
+	eval PATH="$(IFS=":"; echo "${PATHS[*]}")"
+	export PATH
+}
+
+function path-contains() {
+	local DIRNAME="${1:?error: Usage ${FUNCNAME[0]} DIRNAME}"
+	local LIST="$PATH"
+	[ "${2:-}" = "in" ] && LIST="${*:3}"
+	[ "${2:-}" = "at" ] && LIST="${!3}"
+
+	[[ "$LIST" =~ (^|:)${DIRNAME%/}/?(:|$) ]]
+}
+
+function path-remove() {
+	local DIRNAME="${1:?error: Usage ${FUNCNAME[0]} DIRNAME}"
+	local IFS=$'\n'
+
+	path-contains "$DIRNAME" || return
+
+	local P PATHS=()
+	for P in ${PATH//:/$'\n'}; do
+		[ "${P%/}" = "${DIRNAME%/}" ] && continue
+		PATHS+=("${P%/}")
+	done
+
+	eval PATH="$(IFS=":"; echo "${PATHS[*]}")"
+	export PATH
+}
+
+function path-equals() {
+	local PATH1="${1:?error: Usage: ${FUNCNAME[0]} PATH1 PATH2}"
+	local PATH2="${2:?error: Usage: ${FUNCNAME[0]} PATH1 PATH2}"
+	PATH1="$(realpath --quiet "$PATH1")"
+	PATH2="$(realpath --quiet "$PATH2")"
+
+	[ "$PATH1" = "$PATH2" ]
+}
+
+# Usage: $FUNCNAME PATH...
+function path-export() {
+	local DIRS=("$@")
+	local DIR
+	for DIR in "${DIRS[@]}"; do
+		[[ :"$PATH": =~ :$DIR: ]] && continue
+		[ -d "$DIR" ] || continue
+
+		PATH="$DIR:$PATH"
+	done
+	export PATH
+}
+
+# Usage: $FUNCNAME CMD [-c|--command CMD] TARGET
+function path() {
+	local CMDOPTS=()
+	local TARGET
+	local CMD
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-c|--command)
+				CMD="$2"
+				shift
+				;;
+			--command=*)
+				CMD="${ARG#*=}"
+				;;
+			-*)
+				CMDOPTS+=("$ARG")
+				;;
+			*)
+				if [ -n "${TARGET:-}" ]; then
+					error "garbage argument: '$ARG'"
+					return 255
+				fi
+				TARGET="$ARG"
+				;;
+		esac
+		shift
+	done
+	if [ -z "${CMD:-}" ]; then
+		if executable realpath; then
+			CMD=realpath
+		elif executable readlink; then
+			CMD=readlink
+		else
+			error "proxy command not found"
+			return 255
+		fi
+	fi
+	local RESULT RET=0
+	# NOTE: realpathが関数の場合があるのでcommandを経由しない、aliasでループするのでevalもしない
+	RESULT="$(LC_ALL=C "$CMD" ${CMDOPTS[@]:+"${CMDOPTS[@]}"} "${TARGET:-}")" || RET=$?
+	echo-with-cbcopy -N "$RESULT"
+
+	return $RET
+}
+complete -F _filedir_xspec path p
+
+alias realpath='path -c realpath'
+alias readlink='path -c readlink'
+alias p='path'

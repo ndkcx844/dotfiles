@@ -1,0 +1,163 @@
+# -*-Shell-script-*-
+#
+# This file is not a stand-alone shell script.
+# This provides functions to less that source it.
+
+export LESS="--RAW-CONTROL-CHARS --ignore-case --quit-if-one-screen --squeeze-blank-lines --no-init --LONG-PROMPT --HILITE-UNREAD"
+if command grep -Fwq 'export LESSOPEN="||' "$(command type -P lesspipe.sh)"; then
+	export LESSOPEN="|| /usr/bin/env lesspipe.sh %s"
+else
+	export LESSOPEN="| /usr/bin/env lesspipe.sh %s" # for co51chroot
+fi
+
+function less() {
+	if executable fzf; then
+		if [ $# = 0 ] && [ ! -p /dev/stdin ] && [ ! -s /dev/stdin ]; then
+			fzf-less
+			return
+		fi
+	fi
+
+	local FILES=()
+	local LESSOPTS=()
+	local COLOR=yes
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-[?V]|--help|--version)
+				LESSOPTS+=("$ARG")
+				;;
+			-[aBcCdeEfFgGiIJKLmMnNqQrRsSuUVwWX~])
+				LESSOPTS+=("$ARG")
+				;;
+			-+[aBcCdeEfFgGiIJKLmMnNqQrRsSuUVwWX~])
+				LESSOPTS+=("$ARG")
+				;;
+			-[bhjkoOpPtTxyz#])
+				LESSOPTS+=("$ARG" "$2")
+				shift
+				;;
+			-)
+				LESSOPTS+=("$ARG" "$2")
+				shift
+				;;
+			--)
+				LESSOPTS+=("$ARG")
+				FILES+=("${@:2}")
+				break
+				;;
+			+*)
+				LESSOPTS+=("$ARG")
+				;;
+			# custom options
+			--color)
+				COLOR="$2"
+				shift
+				;;
+			--color=*)
+				COLOR="${ARG#*=}"
+				;;
+			--no-color)
+				COLOR=never
+				;;
+			--*)
+				LESSOPTS+=("$ARG")
+				;;
+			*)
+				FILES+=("$ARG")
+				;;
+		esac
+		shift
+	done
+
+	local LESSOPEN="${LESSOPEN:-}"
+	case "${COLOR:-}" in
+		no|none|never)
+			LESSOPEN=""
+			;;
+	esac
+
+	sudo LESS="$LESS" LESSOPEN="${LESSOPEN:-}" "less" ${LESSOPTS[@]:+"${LESSOPTS[@]}"} ${FILES[@]:+"${FILES[@]}"}
+	# XXX: sudoコマンドによって変更されている履歴ファイルの所有者を元に戻す
+	local LESSHISTORY="$HOME"/.lesshst
+	if [ -f "$LESSHISTORY" ] && [ ! -r "$LESSHISTORY" ]; then
+		sudo chown "$USER"."$USER" "$LESSHISTORY"
+	fi
+}
+
+alias les='less'
+alias lesss='less'
+alias leess='less'
+alias lessss='less'
+alias ess='less'
+alias l='less'
+alias lv='less'
+
+if [ -n "${PS1:-}" ] && ! executable -f _less_org; then
+	# NOTE: 元の補完関数がfzfになっているので、検索
+	ORGLESSCOMP="$(complete-function less)"
+	if [ -n "${ORGLESSCOMP:-}" ]; then
+		function-copy "${ORGLESSCOMP:-}" _less_org
+	fi
+fi
+function _less() {
+	_less_org "$@"
+
+	# save original result
+	local compreply=("${COMPREPLY[@]}")
+
+	local cur
+	_init_completion || return
+
+	# restore original result
+	COMPREPLY=("${compreply[@]}")
+
+	if [[ "$cur" == -* ]]; then
+		local extopts=(--color --no-color)
+		readarray -t COMPREPLY < <(compgen -W "${COMPREPLY[*]} ${extopts[*]}" -- "$cur")
+	fi
+}
+if executable -f _less_org; then
+	complete -o filenames -F _less less l les lesss leess ess lv
+fi
+
+function cat() {
+	local FILES=()
+	local CATOPTS=()
+	while [ $# != 0 ]; do
+		local ARG="$1"
+		case "$ARG" in
+			-A|--show-all|-b|--number-nonblank|-e|-E|--show-ends|-n|--number|-s|--squeeze-blank|-t|-T|--show-tabs|-u|-v|--show-nonprinting)
+				CATOPTS+=("$ARG")
+				;;
+			*)
+				FILES+=("$ARG")
+				;;
+		esac
+		shift
+	done
+
+	if [ ${#FILES[@]} = 0 ]; then
+		command cat ${CATOPTS[@]:+"${CATOPTS[@]}"}
+		return
+	fi
+
+	local TTY=yes
+	stdout-is-tty || TTY=no
+	for FILE in ${FILES[@]:+"${FILES[@]}"}; do
+		local FILTER=~/.local/bin/file-prefilter
+		local NEEDS_FALLBACK=no
+		if [ "$TTY" = yes ] && [ -x "$FILTER" ] && file-exists "$FILE"; then
+			sudo "$FILTER" "$FILE" 2>/dev/null || NEEDS_FALLBACK=yes
+		else
+			NEEDS_FALLBACK=yes
+		fi
+		if [ "${NEEDS_FALLBACK:-}" = yes ]; then
+			if [ -r ${FILE:+"$FILE"} ]; then
+				command cat ${FILE:+"$FILE"}
+			else
+				sudo "cat" ${FILE:+"$FILE"}
+			fi
+		fi
+	done | command cat ${CATOPTS[@]:+"${CATOPTS[@]}"}
+}

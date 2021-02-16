@@ -1,0 +1,59 @@
+# -*-Shell-script-*-
+#
+# This file is not a stand-alone shell script.
+# This provides environment about color that source it.
+
+# Black        0;30     Dark Gray     1;30
+# Red          0;31     Light Red     1;31
+# Green        0;32     Light Green   1;32
+# Brown/Orange 0;33     Yellow        1;33
+# Blue         0;34     Light Blue    1;34
+# Purple       0;35     Light Purple  1;35
+# Cyan         0;36     Light Cyan    1;36
+# Light Gray   0;37     White         1;37
+if command readlink /proc/$$/fd/2 | command grep -Fq /dev/pts; then
+	# NOTE: use ${XXX:+x} style to avoid "bash: XXX: readonly variable" message.
+	[ -n "${BOLD:+x}" ]   || readonly BOLD='\033[0m\033[1m'
+	[ -n "${RED:+x}" ]    || readonly RED='\033[1;31m'
+	[ -n "${BLUE:+x}" ]   || readonly BLUE='\033[1;34m'
+	[ -n "${YELLOW:+x}" ] || readonly YELLOW='\033[1;33m'
+	[ -n "${NORMAL:+x}" ] || readonly NORMAL='\033[0m'
+else
+	[ -n "${BOLD:+x}" ]   || readonly BOLD=''
+	[ -n "${RED:+x}" ]    || readonly RED=''
+	[ -n "${BLUE:+x}" ]   || readonly BLUE=''
+	[ -n "${NORMAL:+x}" ] || readonly NORMAL=''
+fi
+
+# costomize
+unset _LS_COLORS
+for C in ${LS_COLORS//:/ }; do
+	if [[ "$C" == di=* ]]; then
+		_LS_COLORS+="di=1;34:"
+	else
+		_LS_COLORS+="$C:"
+	fi
+done
+export LS_COLORS="$_LS_COLORS"
+unset _LS_COLORS
+
+function color-samples() {
+	local ATTR I
+	for ATTR in {0..1}; do
+		echo ===
+		for I in {0..255}; do
+			printf '\e[%d;38;5;%dm%d;38;5;%03d\e[m ' "$ATTR" "$I" "$ATTR" "$I"
+			[ $((I % 8)) = 7 ] && echo
+		done
+	done
+	local attr fg bg
+	for attr in $(seq 0 1); do
+		echo ===
+		for fg in 39 $(seq 30 37) $(seq 90 97); do
+			for bg in 49 $(seq 40 47) $(seq 100 107); do
+				printf "\033[%d;${fg};${bg}m%d;${fg};${bg}\033[m " "$attr" "$attr"
+			done
+			echo
+		done
+	done
+}
