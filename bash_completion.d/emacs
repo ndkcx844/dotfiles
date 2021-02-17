@@ -1,0 +1,14 @@
+# bash completion for emacs                             -*- shell-script -*-
+
+function _emacs() {
+	local cur
+	_init_completion || return
+
+	if [[ "$cur" == -* ]]; then
+		local opts=(--batch --chdir --daemon --debug-init --display -d --no-desktop --no-init-file -q --no-loadup -nl --no-site-file --no-x-resources --no-site-lisp -nsl --no-splash --no-window-system -nw --quick -Q -q --no-site-file --no-x-resources --script --terminal -t --user -u --directory -L --eval --execute --file --find-file --funcall -f --insert --kill --load -l --visit --background-color -bg --basic-display -D --border-color -bd --border-width -bw --color --color --cursor-color -cr --font -fn --foreground-color -fg --fullheight -fh --fullscreen -fs --fullwidth -fw --maximized -mm --geometry -g --no-bitmap-icon -nbi --iconic --internal-border -ib --line-spacing -lsp --mouse-color -ms --name --no-blinking-cursor -nbc --reverse-video -r --title -T --vertical-scroll-bars -vb --xrm --parent-id --help --version)
+		COMPREPLY=($(compgen -W "${opts[*]}" -- "$cur"))
+	else
+		_filedir
+	fi
+}
+complete -o default -F _emacs emacs

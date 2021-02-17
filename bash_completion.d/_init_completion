@@ -1,0 +1,79 @@
+# -*- Shell-script -*-
+# This script is for compatibility with bash-completion-1.3-7.el5
+
+if type _init_completion &>/dev/null; then
+	return 0
+fi
+
+_init_completion() {
+	local exclude= flag outx errx inx OPTIND=1;
+	while getopts "n:e:o:i:s" flag "$@"; do
+		case $flag in
+			n)
+				exclude+=$OPTARG
+				;;
+			e)
+				errx=$OPTARG
+				;;
+			o)
+				outx=$OPTARG
+				;;
+			i)
+				inx=$OPTARG
+				;;
+			s)
+				split=false;
+				exclude+==
+				;;
+		esac;
+	done;
+	COMPREPLY=();
+	local redir="@(?([0-9])<|?([0-9&])>?(>)|>&)";
+	_get_comp_words_by_ref -n "$exclude<>&" cur prev words cword;
+	_variables && return 1;
+	if [[ $cur == $redir* || $prev == $redir ]]; then
+		local xspec;
+		case $cur in
+			2'>'*)
+				xspec=$errx
+				;;
+			*'>'*)
+				xspec=$outx
+				;;
+			*'<'*)
+				xspec=$inx
+				;;
+			*)
+				case $prev in
+					2'>'*)
+						xspec=$errx
+						;;
+					*'>'*)
+						xspec=$outx
+						;;
+					*'<'*)
+						xspec=$inx
+						;;
+				esac
+				;;
+		esac;
+		cur="${cur##$redir}";
+		_filedir $xspec;
+		return 1;
+	fi;
+	local i skip;
+	for ((i=1; i < ${#words[@]}; 1))
+	do
+		if [[ ${words[i]} == $redir* ]]; then
+			[[ ${words[i]} == $redir ]] && skip=2 || skip=1;
+			words=("${words[@]:0:i}" "${words[@]:i+skip}");
+			[[ $i -le $cword ]] && cword=$(( cword - skip ));
+		else
+			i=$(( ++i ));
+		fi;
+	done;
+	[[ $cword -le 0 ]] && return 1;
+	prev=${words[cword-1]};
+	[[ -n ${split-} ]] && _split_longopt && split=true;
+	return 0
+}

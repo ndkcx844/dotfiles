@@ -1,0 +1,7 @@
+# compopt command for bash completion                             -*- shell-script -*-
+
+if ! type compopt &>/dev/null; then
+	function compopt() {
+		: nothing todo
+	}
+fi

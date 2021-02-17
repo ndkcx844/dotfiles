@@ -1,0 +1,14 @@
+# bash completion for bat                             -*- shell-script -*-
+
+function _bat() {
+	local cur
+	_init_completion || return
+
+	if [[ "$cur" == -* ]]; then
+		readarray -t COMPREPLY < <(compgen -W "$(command-options bat --help)" -- "$cur")
+	else
+		# 検索対象の補完
+		_filedir
+	fi
+}
+complete -F _bat bat

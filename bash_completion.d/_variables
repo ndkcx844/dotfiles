@@ -1,0 +1,63 @@
+# -*- Shell-script -*-
+# This script is for compatibility with bash-completion-1.3-7.el5
+
+if type _variables &>/dev/null; then
+   return 0
+fi
+
+_variables() {
+    if [[ $cur =~ ^(\$(\{[!#]?)?)([A-Za-z0-9_]*)$ ]]; then
+        if [[ $cur == \${* ]]; then
+            local arrs vars;
+            vars=($( compgen -A variable -P ${BASH_REMATCH[1]} -S '}' -- ${BASH_REMATCH[3]} )) && arrs=($( compgen -A arrayvar -P ${BASH_REMATCH[1]} -S '[' -- ${BASH_REMATCH[3]} ));
+            if [[ ${#vars[@]} -eq 1 && -n $arrs ]]; then
+                compopt -o nospace;
+                COMPREPLY+=(${arrs[*]});
+            else
+                COMPREPLY+=(${vars[*]});
+            fi;
+        else
+            COMPREPLY+=($( compgen -A variable -P '$' -- "${BASH_REMATCH[3]}" ));
+        fi;
+        return 0;
+    else
+        if [[ $cur =~ ^(\$\{[#!]?)([A-Za-z0-9_]*)\[([^]]*)$ ]]; then
+            local IFS='
+';
+            COMPREPLY+=($( compgen -W '$(printf %s\\n "${!'${BASH_REMATCH[2]}'[@]}")'             -P "${BASH_REMATCH[1]}${BASH_REMATCH[2]}[" -S ']}' -- "${BASH_REMATCH[3]}" ));
+            if [[ ${BASH_REMATCH[3]} == [@*] ]]; then
+                COMPREPLY+=("${BASH_REMATCH[1]}${BASH_REMATCH[2]}[${BASH_REMATCH[3]}]}");
+            fi;
+            __ltrim_colon_completions "$cur";
+            return 0;
+        else
+            if [[ $cur =~ ^\$\{[#!]?[A-Za-z0-9_]*\[.*\]$ ]]; then
+                COMPREPLY+=("$cur}");
+                __ltrim_colon_completions "$cur";
+                return 0;
+            else
+                case $prev in
+                    TZ)
+                        cur=/usr/share/zoneinfo/$cur;
+                        _filedir;
+                        for i in ${!COMPREPLY[@]};
+                        do
+                            if [[ ${COMPREPLY[i]} == *.tab ]]; then
+                                unset 'COMPREPLY[i]';
+                                continue;
+                            else
+                                if [[ -d ${COMPREPLY[i]} ]]; then
+                                    COMPREPLY[i]+=/;
+                                    compopt -o nospace;
+                                fi;
+                            fi;
+                            COMPREPLY[i]=${COMPREPLY[i]#/usr/share/zoneinfo/};
+                        done;
+                        return 0
+                    ;;
+                esac;
+            fi;
+        fi;
+    fi;
+    return 1
+}

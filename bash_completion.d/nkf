@@ -1,0 +1,33 @@
+# bash completion for nkf                             -*- shell-script -*-
+
+function _nkf() {
+	local cur prev
+	_init_completion || return
+
+	if [[ "$cur" == --* ]]; then
+		local longopts=(--hiragana --katakana --katakana-hiragana --cap-input --url-input --numchar-input --fb-skip --fb-html --fb-xml --fb-perl --fb-java --fb-subchar --guess --version --help --ic --oc --in-place --overwrite)
+		COMPREPLY=($(compgen -W "${longopts[*]}" -- "$cur"))
+		return
+	elif [[ "$cur" == -* ]]; then
+		local shortopts=(-j -s -e -w -J -S -E -W -mB -mQ -mS -mN -m0 -MB -MQ -f -F -Z -Z0 -Z1 -Z2 -Z3 -Z4 -X -x -O -L -Lu -Lw -Lm -g -v -V)
+		COMPREPLY=($(compgen -W "${shortopts[*]}" -- "$cur"))
+		return
+	else
+		case "$prev" in
+			--ic|--oc)
+				local encodings=(utf8 iso2022jp shiftjis eucjp)
+				COMPREPLY=($(compgen -W "${encodings[*]}" -- "$cur"))
+				;;
+			-O)
+				COMPREPLY=($(compgen -f -- "$cur"))
+				return
+				;;
+		esac
+	fi
+	# TODO:
+	#  m[BQSN0] MIME decode [B:base64,Q:quoted,S:strict,N:nonstrict,0:no decode]
+	#  M[BQ]    MIME encode [B:base64 Q:quoted]
+	#  Z[0-4]   Default/0: Convert JISX0208 Alphabet to ASCII
+	#  L[uwm]   Line mode u:LF w:CRLF m:CR (DEFAULT noconversion)
+}
+complete -o default -F _nkf nkf

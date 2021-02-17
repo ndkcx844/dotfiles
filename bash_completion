@@ -1,0 +1,18 @@
+# bash completion for user defined               -*- shell-script -*-
+
+# defined at /usr/share/bash-completion/bash_completion
+_backup_glob="${_backup_glob:-}"
+_blacklist_glob="${_blacklist_glob:-}"
+
+# source compat completion directory definitions
+srcdir=~/.bash_completion.d
+if [[ -d $srcdir && -r $srcdir && -x $srcdir ]]; then
+	for file in "$srcdir"/*; do
+		[ -f "$file" ] || continue
+		[ -r "$file" ] || continue
+		[[ "${file##*/}" == @($_backup_glob|Makefile*|$_blacklist_glob) ]] && continue
+
+		. "$file"
+	done
+fi
+unset srcdir file
