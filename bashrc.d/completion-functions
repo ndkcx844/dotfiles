@@ -23,6 +23,15 @@ function complete-function() {
 	command complete -p "$CMD" 2>/dev/null | command awk '/ -F /{print $(NF-1)}'
 }
 
+# XXX: base file not sourced by /etc/bash.bashrc on Ubuntu
+if [ -z "${BASH_COMPLETION_VERSINFO:-}" ]; then
+	if [ -f /usr/share/bash-completion/bash_completion ]; then
+		include /usr/share/bash-completion/bash_completion
+	elif [ -f /etc/bash_completion ]; then
+		include /etc/bash_completion
+	fi
+fi
+
 # XXX: user file not sourced by bash-completion on Cent5
 if (( ${BASH_VERSINFO[0]:-} < 4 )); then
 	complete-reload

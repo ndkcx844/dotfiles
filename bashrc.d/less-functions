@@ -4,10 +4,12 @@
 # This provides functions to less that source it.
 
 export LESS="--RAW-CONTROL-CHARS --ignore-case --quit-if-one-screen --squeeze-blank-lines --no-init --LONG-PROMPT --HILITE-UNREAD"
-if command grep -Fwq 'export LESSOPEN="||' "$(command type -P lesspipe.sh)"; then
-	export LESSOPEN="|| /usr/bin/env lesspipe.sh %s"
+# NOTE: lesspipe.sh on CentOS, lesspipe on Ubuntu
+LESSPIPE="$(command type -P lesspipe.sh || command type -P lesspipe)"
+if command grep -Fwqs 'export LESSOPEN="||' "$LESSPIPE"; then
+	export LESSOPEN="|| /usr/bin/env "${LESSPIPE##*/}" %s"
 else
-	export LESSOPEN="| /usr/bin/env lesspipe.sh %s" # for co51chroot
+	export LESSOPEN="| /usr/bin/env "${LESSPIPE##*/}" %s" # for co51chroot
 fi
 
 function less() {
