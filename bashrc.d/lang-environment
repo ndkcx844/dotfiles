@@ -6,7 +6,7 @@
 # LANG
 if tty | command grep -Fq /dev/tty && [ "$TERM" = linux ]; then
 	export LANG=C
-else
+elif locale --all-locales 2>/dev/null | grep -qsi ja_JP; then
 	export LANG=ja_JP.UTF-8
 	export GDM_LANG=ja_JP.UTF-8
 fi
