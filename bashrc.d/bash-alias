@@ -5,6 +5,8 @@
 # enable expand_aliases for "su -"
 shopt -s expand_aliases
 
+alias ll='ls -aFl'
+
 alias ls='command-without-dereference ls --color=auto'
 alias cp='command-without-dereference cp'
 alias mv='command-without-dereference mv'
