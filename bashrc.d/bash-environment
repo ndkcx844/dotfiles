@@ -9,7 +9,9 @@
 path-export ~/scripts ~/.local/bin
 
 # editor
-export EDITOR="emacs -nw"
+if executable --command emacs; then
+	export EDITOR="emacs -nw"
+fi
 export PAGER="less"
 
 # for debugging (-x/-o xtrace)
