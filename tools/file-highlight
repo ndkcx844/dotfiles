@@ -1,0 +1,1178 @@
+#!/bin/bash
+# -*- coding: utf-8 -*-
+# Copyright (c) 2019-2020 Fuji Xerox, Co., Ltd. All Rights Reserved.
+#
+# description: highlight utility for file.
+# Author: Kosuke.Tanaka
+#
+
+usage() {
+	cat <<-EOF
+	Usage: ${0##*/} [OPTION]... [FILE]
+	Colorize FILE to standard output.
+
+	With no FILE, or when FILE is -, read standard input.
+
+	  --pager=CMD  command after colorize
+	  --filter=CMD command before colorize
+	  --failsafe   go anyway if no type
+	  --type=TYPE  syntax type
+	  -x, --debug  run with xtrace
+	  -h, --help   display this help and exit
+	  --usage      alias of '--help'
+	  --force      alias of '--failsafe'
+	EOF
+}
+
+colorize-cmdline() {
+	local FILE
+	local TYPE
+	local FORCE=no
+	while [ $# != 0 ]; do
+		case "$1" in
+			--type|--lexer|--syntax)
+				TYPE="$2"
+				shift
+				;;
+			--type=*|--lexer=*|--syntax=*)
+				TYPE="${1#*=}"
+				;;
+			--force)
+				FORCE=yes
+				;;
+			--file)
+				FILE="$2"
+				shift
+				;;
+			--file=*)
+				FILE="${1#*=}"
+				;;
+			*)
+				echo "error: unsupported option: $1" >&2
+				return 255
+				;;
+		esac
+		shift
+	done
+
+	if [ -n "${TYPE:-}" ]; then
+		colorize-cmdline-by-filetype "$TYPE" && return
+	fi
+
+	if [ -n "${FILE:-}" ]; then
+		# HINT1. filename
+		local HINT="$FILE"
+		HINT="${HINT##*/}"
+		HINT="${HINT%.[1-9]}" # NOTE: ログローテーション対応
+		while [ -n "$HINT" ]; do
+			local TYPE="$HINT"
+			colorize-cmdline-by-filetype "$TYPE" && return
+
+			[ "$HINT" = "${HINT#*.}" ] && break
+			HINT="${HINT#*.}"
+		done
+
+		# NOTE: 1000 バイトだと足りないので 10000 (e.g. .eml ファイル)
+		local ENCODE
+		ENCODE="$(head --bytes=10000 "$FILE" | nkf -g)"
+		ENCODE="$(toupper "$ENCODE")"
+		[ "$ENCODE" = BINARY ] && return 255
+
+		# HINT2. magic header
+		colorize-cmdline-by-magic-header "$FILE" && return
+
+		# HINT3. shebang
+		colorize-cmdline-by-shebang "$FILE" && return
+	fi
+
+	if [ "$FORCE" = yes ]; then
+		colorize-cmdline-by-filetype "conf" && return
+	fi
+
+	return 255
+}
+
+colorize-cmdline-by-log-highlight() {
+	local FILETYPE="$1"
+	case "${FILETYPE:-}" in
+		log|messages|syslog|secure|maillog|cron)
+			echo log-highlight
+			return 0
+			;;
+		txt|text) # NOTE: highlightだと色が付かないので代用
+			echo log-highlight
+			return 0
+			;;
+	esac
+
+	return 255
+}
+
+colorize-cmdline-by-highlight() {
+	local FILETYPE="$1"
+	local SYNTAX
+	case "${FILETYPE%~}" in
+		# $ highlight --list-scripts=langs | sed -r -e '/^[a-zA-Z].*: [a-z]/!d' -e 's/^.*: //' -e 's/\( //' -e 's/ \)//' -e 's/[[:space:]]+/|/g' -e 's/^.*$/\0)/' -e 's/^([^|)]+)([|)])(.*|)/\1\2\3 SYNTAX=\1;;/g'
+		abap4|abp) SYNTAX=abap4;;
+		abc) SYNTAX=abc;;
+		abnf) SYNTAX=abnf;;
+		actionscript|as) SYNTAX=actionscript;;
+		ada|a|adb|ads|gnad) SYNTAX=ada;;
+		agda) SYNTAX=agda;;
+		algol|alg) SYNTAX=algol;;
+		ampl|dat|run) SYNTAX=ampl;;
+		amtrix|hnd|s4|s4h|s4t|t4) SYNTAX=amtrix;;
+		applescript) SYNTAX=applescript;;
+		arc) SYNTAX=arc;;
+		arm) SYNTAX=arm;;
+		as400cl) SYNTAX=as400cl;;
+		ascend|a4c) SYNTAX=ascend;;
+		asp|ascx|ashx|aspx) SYNTAX=asp;;
+		aspect|was|wud) SYNTAX=aspect;;
+		assembler|29k|68s|68x|a51|asm|x86) SYNTAX=assembler;;
+		ats|dats) SYNTAX=ats;;
+		autohotkey|ahk) SYNTAX=autohotkey;;
+		autoit|au3) SYNTAX=autoit;;
+		avenue) SYNTAX=avenue;;
+		bat|cmd) SYNTAX=bat;;
+		bbcode) SYNTAX=bbcode;;
+		bcpl) SYNTAX=bcpl;;
+		bibtex|bib) SYNTAX=bibtex;;
+		biferno|bfr) SYNTAX=biferno;;
+		bison|y) SYNTAX=bison;;
+		blitzbasic|bb) SYNTAX=blitzbasic;;
+		bms) SYNTAX=bms;;
+		bnf) SYNTAX=bnf;;
+		boo) SYNTAX=boo;;
+		c|c++|cc|cpp|cu|cxx|h|hh|hpp|hxx) SYNTAX=c;;
+		ceylon) SYNTAX=ceylon;;
+		charmm|inp) SYNTAX=charmm;;
+		chill|chl) SYNTAX=chill;;
+		chpl) SYNTAX=chpl;;
+		clean|icl) SYNTAX=clean;;
+		clearbasic|cb) SYNTAX=clearbasic;;
+		clipper) SYNTAX=clipper;;
+		clojure|clj) SYNTAX=clojure;;
+		clp) SYNTAX=clp;;
+		cmake) SYNTAX=cmake;;
+		cobol|cbl|cob) SYNTAX=cobol;;
+		coffee) SYNTAX=coffee;;
+		coldfusion|cfc|cfm) SYNTAX=coldfusion;;
+		conf|anacrontab) SYNTAX=conf;;
+		crk) SYNTAX=crk;;
+		cs_block_regex) SYNTAX=cs_block_regex;;
+		csharp|cs) SYNTAX=csharp;;
+		css) SYNTAX=css;;
+		d) SYNTAX=d;;
+		dart) SYNTAX=dart;;
+		diff|patch) SYNTAX=diff;;
+		docker|dockerfile) SYNTAX=docker;;
+		dts|dtsi) SYNTAX=dts;;
+		dylan) SYNTAX=dylan;;
+		ebnf) SYNTAX=ebnf;;
+		ebnf2) SYNTAX=ebnf2;;
+		eiffel|e|se) SYNTAX=eiffel;;
+		elixir|ex|exs) SYNTAX=elixir;;
+		email) SYNTAX=email;;
+		erlang|erl|hrl) SYNTAX=erlang;;
+		euphoria|eu|ew|exw|wxu) SYNTAX=euphoria;;
+		express|exp) SYNTAX=express;;
+		fame|fame) SYNTAX=fame;;
+		fasm|inc) SYNTAX=fasm;;
+		felix|flx) SYNTAX=felix;;
+		fortran77|f|"for"|ftn) SYNTAX=fortran77;;
+		fortran90|f90|f95) SYNTAX=fortran90;;
+		frink) SYNTAX=frink;;
+		fsharp|fs|fsx) SYNTAX=fsharp;;
+		fstab) SYNTAX=fstab;;
+		fx) SYNTAX=fx;;
+		gambas|class) SYNTAX=gambas;;
+		gdb) SYNTAX=gdb;;
+		gdscript|gd) SYNTAX=gdscript;;
+		go) SYNTAX=go;;
+		graphviz|dot) SYNTAX=graphviz;;
+		haskell|hs) SYNTAX=haskell;;
+		haxe|hx) SYNTAX=haxe;;
+		hcl) SYNTAX=hcl;;
+		html|htm|jinja|twig|xhtml) SYNTAX=html;;
+		httpd) SYNTAX=httpd;;
+		icon|icn) SYNTAX=icon;;
+		idl) SYNTAX=idl;;
+		idlang) SYNTAX=idlang;;
+		inc_luatex) SYNTAX=inc_luatex;;
+		informix|4gl) SYNTAX=informix;;
+		ini|desktop|doxyfile) SYNTAX=ini;;
+		innosetup|iss) SYNTAX=innosetup;;
+		interlis|ili) SYNTAX=interlis;;
+		io) SYNTAX=io;;
+		jasmin|j) SYNTAX=jasmin;;
+		java|groovy|grv|jenkinsfile) SYNTAX=java;;
+		js) SYNTAX=js;;
+		js_regex) SYNTAX=js_regex;;
+		json) SYNTAX=json;;
+		jsp) SYNTAX=jsp;;
+		jsx) SYNTAX=jsx;;
+		julia|jl) SYNTAX=julia;;
+		kotlin|kt) SYNTAX=kotlin;;
+		ldif) SYNTAX=ldif;;
+		less) SYNTAX=less;;
+		lhs) SYNTAX=lhs;;
+		lilypond|ly) SYNTAX=lilypond;;
+		limbo|b) SYNTAX=limbo;;
+		lindenscript|lsl) SYNTAX=lindenscript;;
+		lisp|cl|clisp|el|fas|lsp|sbcl|scm|scom) SYNTAX=lisp;;
+		logtalk|lgt) SYNTAX=logtalk;;
+		lotos) SYNTAX=lotos;;
+		lotus|ls) SYNTAX=lotus;;
+		lua) SYNTAX=lua;;
+		luban|lbn) SYNTAX=luban;;
+		make|mak|makefile|mk) SYNTAX=make;;
+		maple|mpl) SYNTAX=maple;;
+		matlab|m) SYNTAX=matlab;;
+		maya|mel) SYNTAX=maya;;
+		md|markdown) SYNTAX=md;;
+		mercury) SYNTAX=mercury;;
+		miranda) SYNTAX=miranda;;
+		mod2|def|mod) SYNTAX=mod2;;
+		mod3|i3|m3) SYNTAX=mod3;;
+		modelica|mo) SYNTAX=modelica;;
+		moon) SYNTAX=moon;;
+		ms) SYNTAX=ms;;
+		msl|nbs) SYNTAX=msl;;
+		mssql) SYNTAX=mssql;;
+		mxml) SYNTAX=mxml;;
+		n3|nt|ttl) SYNTAX=n3;;
+		nasal|nas) SYNTAX=nasal;;
+		nbc) SYNTAX=nbc;;
+		nemerle|n) SYNTAX=nemerle;;
+		netrexx|nrx) SYNTAX=netrexx;;
+		nginx) SYNTAX=nginx;;
+		nice) SYNTAX=nice;;
+		nim) SYNTAX=nim;;
+		nsis|nsh|nsi) SYNTAX=nsis;;
+		nxc) SYNTAX=nxc;;
+		oberon|ooc) SYNTAX=oberon;;
+		objc) SYNTAX=objc;;
+		ocaml|ml|mli) SYNTAX=ocaml;;
+		octave) SYNTAX=octave;;
+		oorexx) SYNTAX=oorexx;;
+		os) SYNTAX=os;;
+		oz) SYNTAX=oz;;
+		paradox|sc) SYNTAX=paradox;;
+		pas) SYNTAX=pas;;
+		pdf) SYNTAX=pdf;;
+		perl|cgi|perl|pl|plex|plx|pm) SYNTAX=perl;;
+		php|php3|php4|php5|php6) SYNTAX=php;;
+		pike|pmod) SYNTAX=pike;;
+		pl1|bdy|ff|fp|fpp|rpp|sf|sp|spb|spe|spp|sps|wf|wp|wpb|wpp|wps) SYNTAX=pl1;;
+		plperl) SYNTAX=plperl;;
+		plpython) SYNTAX=plpython;;
+		pltcl) SYNTAX=pltcl;;
+		po) SYNTAX=po;;
+		polygen|grm) SYNTAX=polygen;;
+		pony) SYNTAX=pony;;
+		pov) SYNTAX=pov;;
+		pro|pro) SYNTAX=pro;;
+		progress|i|p|w) SYNTAX=progress;;
+		ps) SYNTAX=ps;;
+		ps1) SYNTAX=ps1;;
+		psl) SYNTAX=psl;;
+		pure) SYNTAX=pure;;
+		purebasic|pb|pbi) SYNTAX=purebasic;;
+		pyrex|pyx) SYNTAX=pyrex;;
+		python|py) SYNTAX=python;;
+		q) SYNTAX=q;;
+		qmake) SYNTAX=qmake;;
+		qml) SYNTAX=qml;;
+		qu) SYNTAX=qu;;
+		r) SYNTAX=r;;
+		rebol) SYNTAX=rebol;;
+		rexx|rex|rx|the) SYNTAX=rexx;;
+		rnc) SYNTAX=rnc;;
+		rpg) SYNTAX=rpg;;
+		rpl) SYNTAX=rpl;;
+		rs) SYNTAX=rs;;
+		ruby|gemfile|pp|rakefile|rb|rjs|ruby) SYNTAX=ruby;;
+		s) SYNTAX=s;;
+		sas) SYNTAX=sas;;
+		scala) SYNTAX=scala;;
+		scilab|sce|sci) SYNTAX=scilab;;
+		scss) SYNTAX=scss;;
+		sh|bash|ebuild|eclass|zsh) SYNTAX=sh;;
+		small|sma) SYNTAX=small;;
+		smalltalk|gst|sq|st) SYNTAX=smalltalk;;
+		sml) SYNTAX=sml;;
+		snmp|mib|smi) SYNTAX=snmp;;
+		snobol|sno) SYNTAX=snobol;;
+		spec) SYNTAX=spec;;
+		spn) SYNTAX=spn;;
+		sql) SYNTAX=sql;;
+		squirrel|nut) SYNTAX=squirrel;;
+		styl) SYNTAX=styl;;
+		svg) SYNTAX=svg;;
+		swift) SYNTAX=swift;;
+		sybase) SYNTAX=sybase;;
+		tcl|itcl|wish) SYNTAX=tcl;;
+		tcsh) SYNTAX=tcsh;;
+		tex|cls|sty) SYNTAX=tex;;
+		ts) SYNTAX=ts;;
+		tsql) SYNTAX=tsql;;
+		ttcn3) SYNTAX=ttcn3;;
+		txt|text) SYNTAX=txt;;
+		upc) SYNTAX=upc;;
+		vala) SYNTAX=vala;;
+		vb|bas|basic|bi|vbs) SYNTAX=vb;;
+		verilog|v) SYNTAX=verilog;;
+		vhd) SYNTAX=vhd;;
+		vimscript|vim|vimrc) SYNTAX=vimscript;;
+		whiley) SYNTAX=whiley;;
+		xml|csproj|dtd|ecf|ent|glade|hdr|hub|jnlp|nrm|resx|sgm|sgml|tld|vxml|wml|xsd|xsl) SYNTAX=xml;;
+		xpp) SYNTAX=xpp;;
+		yaiff) SYNTAX=yaiff;;
+		yaml|yml) SYNTAX=yaml;;
+		yang) SYNTAX=yang;;
+		znn) SYNTAX=znn;;
+
+		# wellknown type
+		uut) SYNTAX="sh";;
+		shell|shellscript|shell-script) SYNTAX="sh";;
+		*-functions) SYNTAX="sh";;
+		dash|ash) SYNTAX="sh";;
+		.bash*) SYNTAX="sh";;
+		[Mm]akefile) SYNTAX="make";;
+		csv) SYNTAX=conf;;
+	esac
+	[ -n "${SYNTAX:-}" ] || return 255
+
+	# NOTE: highlight supports "conf" syntax since 3.23...
+	SYNTAX="$(highlight-adapt-syntax "$SYNTAX")"
+
+	# NOTE: "xoria256" syntax not supported by highlight 2.6.14
+	STYLE="$(highlight-adapt-style)"
+
+	echo highlight --tab=8 --out-format=xterm256 --failsafe --syntax="$SYNTAX" --style="$STYLE"
+}
+
+highlight-adapt-syntax() {
+	local SYNTAX="${1:?error: missing SYNTAX operand}"
+
+	if [ "${SYNTAX:-}" = conf ]; then
+		local VERSION
+		VERSION="$(highlight --version | grep -E -o -m1 "[0-9.]+" | awk -F. '{printf "%02d%02d%02d", $1,$2,$3; exit}')"
+		if (( "$VERSION" < "030000" )); then
+			SYNTAX="awk"
+		elif (( "$VERSION" < "032300" )); then
+			SYNTAX=n3
+		fi
+	fi
+
+	echo "$SYNTAX"
+}
+
+highlight-adapt-style() {
+	local STYLE=xoria256
+
+	local VERSION
+	VERSION="$(highlight --version | awk '$3 ~ /^[0-9.]+$/{split($3, v, "."); print v[1]; exit}')"
+	if (("${VERSION:-0}" < 3)); then
+		STYLE=golden
+	fi
+
+	echo "$STYLE"
+}
+
+colorize-cmdline-by-pygmentize() {
+	local FILETYPE="$1"
+	local LEXER
+	case "${FILETYPE%~}" in
+		# $ pygmentize -L | sed -rn -e '/^Lexers:/,/^$/{/^[* ]/p}' | perl -ne 'chomp; my $l = $_; $l .= <> if $l =~ /^\*/; print $l' | sed -rn -e '/filenames/!d' -e '/^\*/s/\* ([^,:]+).*filenames (.*)\)/\1) LEXER=\1;;\n\2) LEXER=\1;;/' -e 's/, /|/g' -e 's/\*\.//g' -e '/./p' | awk '{if (!a[$1]++) print}'
+		abap) LEXER=abap;;
+		abap|ABAP) LEXER=abap;;
+		abnf) LEXER=abnf;;
+		ada) LEXER=ada;;
+		adb|ads|ada) LEXER=ada;;
+		adl) LEXER=adl;;
+		adl|adls|adlf|adlx) LEXER=adl;;
+		agda) LEXER=agda;;
+		aheui) LEXER=aheui;;
+		ahk) LEXER=ahk;;
+		ahk|ahkl) LEXER=ahk;;
+		alloy) LEXER=alloy;;
+		als) LEXER=alloy;;
+		ampl) LEXER=ampl;;
+		run) LEXER=ampl;;
+		antlr-as) LEXER=antlr-as;;
+		G|g) LEXER=antlr-as;;
+		antlr-cpp) LEXER=antlr-cpp;;
+		antlr-csharp) LEXER=antlr-csharp;;
+		antlr-java) LEXER=antlr-java;;
+		antlr-objc) LEXER=antlr-objc;;
+		antlr-perl) LEXER=antlr-perl;;
+		antlr-python) LEXER=antlr-python;;
+		antlr-ruby) LEXER=antlr-ruby;;
+		apacheconf) LEXER=apacheconf;;
+		.htaccess|apache.conf|apache2.conf) LEXER=apacheconf;;
+		apl) LEXER=apl;;
+		applescript) LEXER=applescript;;
+		arduino) LEXER=arduino;;
+		ino) LEXER=arduino;;
+		as) LEXER=as;;
+		as3) LEXER=as3;;
+		aspectj) LEXER=aspectj;;
+		aj) LEXER=aspectj;;
+		aspx-cs) LEXER=aspx-cs;;
+		aspx|asax|ascx|ashx|asmx|axd) LEXER=aspx-cs;;
+		aspx-vb) LEXER=aspx-vb;;
+		asy) LEXER=asy;;
+		at) LEXER=at;;
+		autoit) LEXER=autoit;;
+		au3) LEXER=autoit;;
+		awk) LEXER=awk;;
+		bash) LEXER=bash;;
+		sh|ksh|bash|ebuild|eclass|exheres-0|exlib|zsh|.bashrc|bashrc|.bash_*|bash_*|zshrc|.zshrc|PKGBUILD) LEXER=bash;;
+		bat) LEXER=bat;;
+		bat|cmd) LEXER=bat;;
+		bc) LEXER=bc;;
+		befunge) LEXER=befunge;;
+		bib) LEXER=bib;;
+		blitzbasic) LEXER=blitzbasic;;
+		bb|decls) LEXER=blitzbasic;;
+		blitzmax) LEXER=blitzmax;;
+		bmx) LEXER=blitzmax;;
+		bnf) LEXER=bnf;;
+		boo) LEXER=boo;;
+		boogie) LEXER=boogie;;
+		bpl) LEXER=boogie;;
+		brainfuck) LEXER=brainfuck;;
+		bf|b) LEXER=brainfuck;;
+		bro) LEXER=bro;;
+		bst) LEXER=bst;;
+		bugs) LEXER=bugs;;
+		bug) LEXER=bugs;;
+		c-objdump) LEXER=c-objdump;;
+		c) LEXER=c;;
+		c|h|idc) LEXER=c;;
+		ca65) LEXER=ca65;;
+		s) LEXER=ca65;;
+		cadl) LEXER=cadl;;
+		camkes) LEXER=camkes;;
+		camkes|idl4) LEXER=camkes;;
+		capdl) LEXER=capdl;;
+		cdl) LEXER=capdl;;
+		capnp) LEXER=capnp;;
+		cbmbas) LEXER=cbmbas;;
+		bas) LEXER=cbmbas;;
+		ceylon) LEXER=ceylon;;
+		cfc) LEXER=cfc;;
+		cfengine3) LEXER=cfengine3;;
+		cf) LEXER=cfengine3;;
+		cfm) LEXER=cfm;;
+		cfm|cfml) LEXER=cfm;;
+		chai) LEXER=chai;;
+		chapel) LEXER=chapel;;
+		chpl) LEXER=chapel;;
+		cheetah) LEXER=cheetah;;
+		tmpl|spt) LEXER=cheetah;;
+		cirru) LEXER=cirru;;
+		clay) LEXER=clay;;
+		clean) LEXER=clean;;
+		icl|dcl) LEXER=clean;;
+		clojure) LEXER=clojure;;
+		clj) LEXER=clojure;;
+		clojurescript) LEXER=clojurescript;;
+		cljs) LEXER=clojurescript;;
+		cmake) LEXER=cmake;;
+		cmake|CMakeLists.txt) LEXER=cmake;;
+		cobol) LEXER=cobol;;
+		cob|COB|cpy|CPY) LEXER=cobol;;
+		cobolfree) LEXER=cobolfree;;
+		cbl|CBL) LEXER=cobolfree;;
+		coffee-script) LEXER=coffee-script;;
+		coffee) LEXER=coffee-script;;
+		common-lisp) LEXER=common-lisp;;
+		cl|lisp) LEXER=common-lisp;;
+		componentpascal) LEXER=componentpascal;;
+		cp|cps) LEXER=componentpascal;;
+		console) LEXER=console;;
+		sh-session|shell-session) LEXER=console;;
+		control) LEXER=control;;
+		coq) LEXER=coq;;
+		v) LEXER=coq;;
+		cpp) LEXER=cpp;;
+		cpp|hpp|c++|h++|cc|hh|cxx|hxx|C|H|cp|CPP) LEXER=cpp;;
+		cpp-objdump) LEXER=cpp-objdump;;
+		cpp-objdump|c++-objdump|cxx-objdump) LEXER=cpp-objdump;;
+		cpsa) LEXER=cpsa;;
+		cr) LEXER=cr;;
+		crmsh) LEXER=crmsh;;
+		crmsh|pcmk) LEXER=crmsh;;
+		croc) LEXER=croc;;
+		cryptol) LEXER=cryptol;;
+		cry) LEXER=cryptol;;
+		csharp) LEXER=csharp;;
+		cs) LEXER=csharp;;
+		csound) LEXER=csound;;
+		orc) LEXER=csound;;
+		csound-document) LEXER=csound-document;;
+		csd) LEXER=csound-document;;
+		csound-score) LEXER=csound-score;;
+		sco) LEXER=csound-score;;
+		css+mozpreproc) LEXER=css+mozpreproc;;
+		css.in) LEXER=css+mozpreproc;;
+		css) LEXER=css;;
+		cucumber) LEXER=cucumber;;
+		feature) LEXER=cucumber;;
+		cuda) LEXER=cuda;;
+		cu|cuh) LEXER=cuda;;
+		cypher) LEXER=cypher;;
+		cyp|cypher) LEXER=cypher;;
+		cython) LEXER=cython;;
+		pyx|pxd|pxi) LEXER=cython;;
+		d-objdump) LEXER=d-objdump;;
+		d) LEXER=d;;
+		d|di) LEXER=d;;
+		dart) LEXER=dart;;
+		delphi) LEXER=delphi;;
+		pas|dpr) LEXER=delphi;;
+		dg) LEXER=dg;;
+		diff) LEXER=diff;;
+		diff|patch) LEXER=diff;;
+		docker) LEXER=docker;;
+		Dockerfile|docker) LEXER=docker;;
+		dpatch) LEXER=dpatch;;
+		dpatch|darcspatch) LEXER=dpatch;;
+		dtd) LEXER=dtd;;
+		duel) LEXER=duel;;
+		duel|jbst) LEXER=duel;;
+		dylan-console) LEXER=dylan-console;;
+		dylan-lid) LEXER=dylan-lid;;
+		lid|hdp) LEXER=dylan-lid;;
+		dylan) LEXER=dylan;;
+		dylan|dyl|intr) LEXER=dylan;;
+		earl-grey) LEXER=earl-grey;;
+		eg) LEXER=earl-grey;;
+		easytrieve) LEXER=easytrieve;;
+		ezt|mac) LEXER=easytrieve;;
+		ebnf) LEXER=ebnf;;
+		ec) LEXER=ec;;
+		ec|eh) LEXER=ec;;
+		ecl) LEXER=ecl;;
+		eiffel) LEXER=eiffel;;
+		e) LEXER=eiffel;;
+		elixir) LEXER=elixir;;
+		ex|exs) LEXER=elixir;;
+		elm) LEXER=elm;;
+		emacs) LEXER=emacs;;
+		el) LEXER=emacs;;
+		erl) LEXER=erl;;
+		erl-sh) LEXER=erl;;
+		erlang) LEXER=erlang;;
+		erl|hrl|es|escript) LEXER=erlang;;
+		evoque) LEXER=evoque;;
+		extempore) LEXER=extempore;;
+		xtm) LEXER=extempore;;
+		ezhil) LEXER=ezhil;;
+		n) LEXER=ezhil;;
+		factor) LEXER=factor;;
+		fan) LEXER=fan;;
+		fancy) LEXER=fancy;;
+		fy|fancypack) LEXER=fancy;;
+		felix) LEXER=felix;;
+		flx|flxh) LEXER=felix;;
+		fish) LEXER=fish;;
+		fish|load) LEXER=fish;;
+		forth) LEXER=forth;;
+		frt|fs) LEXER=forth;;
+		fortran) LEXER=fortran;;
+		f03|f90|F03|F90) LEXER=fortran;;
+		fortranfixed) LEXER=fortranfixed;;
+		f|F) LEXER=fortranfixed;;
+		foxpro) LEXER=foxpro;;
+		PRG|prg) LEXER=foxpro;;
+		fsharp) LEXER=fsharp;;
+		fs|fsi) LEXER=fsharp;;
+		gap) LEXER=gap;;
+		g|gd|gi|gap) LEXER=gap;;
+		gas) LEXER=gas;;
+		s|S) LEXER=gas;;
+		genshi) LEXER=genshi;;
+		kid) LEXER=genshi;;
+		glsl) LEXER=glsl;;
+		vert|frag|geo) LEXER=glsl;;
+		gnuplot) LEXER=gnuplot;;
+		plot|plt) LEXER=gnuplot;;
+		go) LEXER=go;;
+		golo) LEXER=golo;;
+		gooddata-cl) LEXER=gooddata-cl;;
+		gdc) LEXER=gooddata-cl;;
+		gosu) LEXER=gosu;;
+		gs|gsx|gsp|vark) LEXER=gosu;;
+		groff) LEXER=groff;;
+		[1234567]|man) LEXER=groff;;
+		groovy) LEXER=groovy;;
+		groovy|gradle) LEXER=groovy;;
+		gst) LEXER=gst;;
+		haml) LEXER=haml;;
+		haskell) LEXER=haskell;;
+		hs) LEXER=haskell;;
+		haxeml) LEXER=haxeml;;
+		hxml) LEXER=haxeml;;
+		hsail) LEXER=hsail;;
+		html+evoque) LEXER=html+evoque;;
+		html) LEXER=html+evoque;;
+		html+handlebars) LEXER=html+handlebars;;
+		handlebars|hbs) LEXER=html+handlebars;;
+		html+ng2) LEXER=html+ng2;;
+		ng2) LEXER=html+ng2;;
+		html+php) LEXER=html+php;;
+		phtml) LEXER=html+php;;
+		html+twig) LEXER=html+twig;;
+		twig) LEXER=html+twig;;
+		html|htm|xhtml|xslt) LEXER=html;;
+		hx) LEXER=hx;;
+		hx|hxsl) LEXER=hx;;
+		hybris) LEXER=hybris;;
+		hy|hyb) LEXER=hybris;;
+		hylang) LEXER=hylang;;
+		hy) LEXER=hylang;;
+		i6t) LEXER=i6t;;
+		idl) LEXER=idl;;
+		pro) LEXER=idl;;
+		idris) LEXER=idris;;
+		idr) LEXER=idris;;
+		igor) LEXER=igor;;
+		ipf) LEXER=igor;;
+		inform6) LEXER=inform6;;
+		inf) LEXER=inform6;;
+		inform7) LEXER=inform7;;
+		ni|i7x) LEXER=inform7;;
+		ini) LEXER=ini;;
+		ini|cfg|inf) LEXER=ini;;
+		io) LEXER=io;;
+		ioke) LEXER=ioke;;
+		ik) LEXER=ioke;;
+		irc) LEXER=irc;;
+		weechatlog) LEXER=irc;;
+		isabelle) LEXER=isabelle;;
+		thy) LEXER=isabelle;;
+		j) LEXER=j;;
+		ijs) LEXER=j;;
+		jags) LEXER=jags;;
+		jag|bug) LEXER=jags;;
+		jasmin) LEXER=jasmin;;
+		java) LEXER=java;;
+		javascript+mozpreproc) LEXER=javascript+mozpreproc;;
+		js.in) LEXER=javascript+mozpreproc;;
+		jcl) LEXER=jcl;;
+		js) LEXER=js;;
+		js|jsm) LEXER=js;;
+		jsgf) LEXER=jsgf;;
+		json) LEXER=json;;
+		jsonld) LEXER=jsonld;;
+		jsp) LEXER=jsp;;
+		julia) LEXER=julia;;
+		jl) LEXER=julia;;
+		juttle) LEXER=juttle;;
+		kal) LEXER=kal;;
+		kconfig) LEXER=kconfig;;
+		Kconfig|*Config.in*|external.in*|standard-modules.in) LEXER=kconfig;;
+		koka) LEXER=koka;;
+		kk|kki) LEXER=koka;;
+		kotlin) LEXER=kotlin;;
+		kt) LEXER=kotlin;;
+		lagda) LEXER=lagda;;
+		lasso) LEXER=lasso;;
+		lasso|lasso[89]) LEXER=lasso;;
+		lcry) LEXER=lcry;;
+		lean) LEXER=lean;;
+		less) LEXER=less;;
+		lhs) LEXER=lhs;;
+		lidr) LEXER=lidr;;
+		limbo) LEXER=limbo;;
+		b) LEXER=limbo;;
+		liquid) LEXER=liquid;;
+		live-script) LEXER=live-script;;
+		ls) LEXER=live-script;;
+		llvm) LEXER=llvm;;
+		ll) LEXER=llvm;;
+		logos) LEXER=logos;;
+		x|xi|xm|xmi) LEXER=logos;;
+		logtalk) LEXER=logtalk;;
+		lgt|logtalk) LEXER=logtalk;;
+		lsl) LEXER=lsl;;
+		lua) LEXER=lua;;
+		lua|wlua) LEXER=lua;;
+		make) LEXER=make;;
+		mak|mk|Makefile|makefile|Makefile.*|GNUmakefile) LEXER=make;;
+		mako) LEXER=mako;;
+		mao) LEXER=mako;;
+		maql) LEXER=maql;;
+		mask) LEXER=mask;;
+		mason) LEXER=mason;;
+		m|mhtml|mc|mi|autohandler|dhandler) LEXER=mason;;
+		mathematica) LEXER=mathematica;;
+		nb|cdf|nbp|ma) LEXER=mathematica;;
+		matlab) LEXER=matlab;;
+		m) LEXER=matlab;;
+		md) LEXER=md;;
+		modelica) LEXER=modelica;;
+		mo) LEXER=modelica;;
+		modula2) LEXER=modula2;;
+		def|mod) LEXER=modula2;;
+		monkey) LEXER=monkey;;
+		monte) LEXER=monte;;
+		mt) LEXER=monte;;
+		moocode) LEXER=moocode;;
+		moo) LEXER=moocode;;
+		moon) LEXER=moon;;
+		mql) LEXER=mql;;
+		mq4|mq5|mqh) LEXER=mql;;
+		mscgen) LEXER=mscgen;;
+		msc) LEXER=mscgen;;
+		mupad) LEXER=mupad;;
+		mu) LEXER=mupad;;
+		mxml) LEXER=mxml;;
+		myghty) LEXER=myghty;;
+		myt|autodelegate) LEXER=myghty;;
+		nasm) LEXER=nasm;;
+		asm|ASM) LEXER=nasm;;
+		ncl) LEXER=ncl;;
+		nemerle) LEXER=nemerle;;
+		nesc) LEXER=nesc;;
+		nc) LEXER=nesc;;
+		newlisp) LEXER=newlisp;;
+		lsp|nl|kif) LEXER=newlisp;;
+		newspeak) LEXER=newspeak;;
+		ns2) LEXER=newspeak;;
+		nginx) LEXER=nginx;;
+		nginx.conf) LEXER=nginx;;
+		nim) LEXER=nim;;
+		nim|nimrod) LEXER=nim;;
+		nit) LEXER=nit;;
+		nixos) LEXER=nixos;;
+		nix) LEXER=nixos;;
+		nsis) LEXER=nsis;;
+		nsi|nsh) LEXER=nsis;;
+		nusmv) LEXER=nusmv;;
+		smv) LEXER=nusmv;;
+		objdump-nasm) LEXER=objdump-nasm;;
+		objdump-intel) LEXER=objdump-nasm;;
+		objdump) LEXER=objdump;;
+		objective-c++) LEXER=objective-c++;;
+		mm|hh) LEXER=objective-c++;;
+		objective-c) LEXER=objective-c;;
+		m|h) LEXER=objective-c;;
+		objective-j) LEXER=objective-j;;
+		ocaml) LEXER=ocaml;;
+		ml|mli|mll|mly) LEXER=ocaml;;
+		octave) LEXER=octave;;
+		odin) LEXER=odin;;
+		ooc) LEXER=ooc;;
+		opa) LEXER=opa;;
+		openedge) LEXER=openedge;;
+		p|cls) LEXER=openedge;;
+		pacmanconf) LEXER=pacmanconf;;
+		pacman.conf) LEXER=pacmanconf;;
+		pan) LEXER=pan;;
+		parasail) LEXER=parasail;;
+		psi|psl) LEXER=parasail;;
+		pawn) LEXER=pawn;;
+		p|pwn|inc) LEXER=pawn;;
+		perl) LEXER=perl;;
+		pl|pm|t) LEXER=perl;;
+		perl6) LEXER=perl6;;
+		pl|pm|nqp|p6|6pl|p6l|pl6|6pm|p6m|pm6|t) LEXER=perl6;;
+		php) LEXER=php;;
+		php|php[345]|inc) LEXER=php;;
+		pig) LEXER=pig;;
+		pike) LEXER=pike;;
+		pike|pmod) LEXER=pike;;
+		pkgconfig) LEXER=pkgconfig;;
+		pc) LEXER=pkgconfig;;
+		postscript) LEXER=postscript;;
+		ps|eps) LEXER=postscript;;
+		pot) LEXER=pot;;
+		pot|po) LEXER=pot;;
+		pov) LEXER=pov;;
+		pov|inc) LEXER=pov;;
+		powershell) LEXER=powershell;;
+		ps1|psm1) LEXER=powershell;;
+		praat) LEXER=praat;;
+		praat|proc|psc) LEXER=praat;;
+		prolog) LEXER=prolog;;
+		ecl|prolog|pro|pl) LEXER=prolog;;
+		properties) LEXER=properties;;
+		protobuf) LEXER=protobuf;;
+		proto) LEXER=protobuf;;
+		pug) LEXER=pug;;
+		pug|jade) LEXER=pug;;
+		puppet) LEXER=puppet;;
+		pp) LEXER=puppet;;
+		py3tb) LEXER=py3tb;;
+		pypylog) LEXER=pypylog;;
+		pytb) LEXER=pytb;;
+		python) LEXER=python;;
+		py|pyw|sc|SConstruct|SConscript|tac|sage) LEXER=python;;
+		qbasic) LEXER=qbasic;;
+		BAS|bas) LEXER=qbasic;;
+		qml) LEXER=qml;;
+		qml|qbs) LEXER=qml;;
+		qvto) LEXER=qvto;;
+		racket) LEXER=racket;;
+		rkt|rktd|rktl) LEXER=racket;;
+		ragel-c) LEXER=ragel-c;;
+		rl) LEXER=ragel-c;;
+		ragel-cpp) LEXER=ragel-cpp;;
+		ragel-d) LEXER=ragel-d;;
+		ragel-em) LEXER=ragel-em;;
+		ragel-java) LEXER=ragel-java;;
+		ragel-objc) LEXER=ragel-objc;;
+		ragel-ruby) LEXER=ragel-ruby;;
+		rb) LEXER=rb;;
+		rb|rbw|Rakefile|rake|gemspec|rbx|duby|Gemfile) LEXER=rb;;
+		rconsole) LEXER=rconsole;;
+		Rout) LEXER=rconsole;;
+		rd) LEXER=rd;;
+		Rd) LEXER=rd;;
+		rebol) LEXER=rebol;;
+		r|r3|reb) LEXER=rebol;;
+		red) LEXER=red;;
+		red|reds) LEXER=red;;
+		redcode) LEXER=redcode;;
+		cw) LEXER=redcode;;
+		registry) LEXER=registry;;
+		reg) LEXER=registry;;
+		resource) LEXER=resource;;
+		txt) LEXER=resource;;
+		rexx) LEXER=rexx;;
+		rexx|rex|rx|arexx) LEXER=rexx;;
+		rhtml) LEXER=rhtml;;
+		rnc) LEXER=rnc;;
+		roboconf-graph) LEXER=roboconf-graph;;
+		graph) LEXER=roboconf-graph;;
+		roboconf-instances) LEXER=roboconf-instances;;
+		instances) LEXER=roboconf-instances;;
+		robotframework) LEXER=robotframework;;
+		txt|robot) LEXER=robotframework;;
+		rql) LEXER=rql;;
+		rsl) LEXER=rsl;;
+		rst) LEXER=rst;;
+		rst|rest) LEXER=rst;;
+		rts) LEXER=rts;;
+		rust) LEXER=rust;;
+		rs|rs.in) LEXER=rust;;
+		sas) LEXER=sas;;
+		SAS|sas) LEXER=sas;;
+		sass) LEXER=sass;;
+		sc) LEXER=sc;;
+		sc|scd) LEXER=sc;;
+		scala) LEXER=scala;;
+		scaml) LEXER=scaml;;
+		scheme) LEXER=scheme;;
+		scm|ss) LEXER=scheme;;
+		scilab) LEXER=scilab;;
+		sci|sce|tst) LEXER=scilab;;
+		scss) LEXER=scss;;
+		shen) LEXER=shen;;
+		silver) LEXER=silver;;
+		sil|vpr) LEXER=silver;;
+		slim) LEXER=slim;;
+		smali) LEXER=smali;;
+		smalltalk) LEXER=smalltalk;;
+		st) LEXER=smalltalk;;
+		smarty) LEXER=smarty;;
+		tpl) LEXER=smarty;;
+		sml) LEXER=sml;;
+		sml|sig|fun) LEXER=sml;;
+		snobol) LEXER=snobol;;
+		snowball) LEXER=snowball;;
+		sbl) LEXER=snowball;;
+		sourceslist) LEXER=sourceslist;;
+		sources.list) LEXER=sourceslist;;
+		sp) LEXER=sp;;
+		sparql) LEXER=sparql;;
+		rq|sparql) LEXER=sparql;;
+		spec) LEXER=spec;;
+		splus) LEXER=splus;;
+		S|R|.Rhistory|.Rprofile|.Renviron) LEXER=splus;;
+		sql) LEXER=sql;;
+		sqlite3) LEXER=sqlite3;;
+		sqlite3-console) LEXER=sqlite3;;
+		squidconf) LEXER=squidconf;;
+		squid.conf) LEXER=squidconf;;
+		ssp) LEXER=ssp;;
+		stan) LEXER=stan;;
+		stata) LEXER=stata;;
+		"do"|ado) LEXER=stata;;
+		swift) LEXER=swift;;
+		swig) LEXER=swig;;
+		swg|i) LEXER=swig;;
+		systemverilog) LEXER=systemverilog;;
+		sv|svh) LEXER=systemverilog;;
+		tads3) LEXER=tads3;;
+		t) LEXER=tads3;;
+		tap) LEXER=tap;;
+		tasm) LEXER=tasm;;
+		asm|ASM|tasm) LEXER=tasm;;
+		tcl) LEXER=tcl;;
+		tcl|rvt) LEXER=tcl;;
+		tcsh) LEXER=tcsh;;
+		tcsh|csh) LEXER=tcsh;;
+		tea) LEXER=tea;;
+		termcap) LEXER=termcap;;
+		termcap|termcap.src) LEXER=termcap;;
+		terminfo) LEXER=terminfo;;
+		terminfo|terminfo.src) LEXER=terminfo;;
+		terraform) LEXER=terraform;;
+		tf) LEXER=terraform;;
+		tex) LEXER=tex;;
+		tex|aux|toc) LEXER=tex;;
+		text) LEXER=text;;
+		thrift) LEXER=thrift;;
+		todotxt) LEXER=todotxt;;
+		todo.txt|todotxt) LEXER=todotxt;;
+		treetop) LEXER=treetop;;
+		treetop|tt) LEXER=treetop;;
+		ts) LEXER=ts;;
+		tsql) LEXER=tsql;;
+		turtle) LEXER=turtle;;
+		ttl) LEXER=turtle;;
+		typoscript) LEXER=typoscript;;
+		ts|txt) LEXER=typoscript;;
+		urbiscript) LEXER=urbiscript;;
+		u) LEXER=urbiscript;;
+		vala) LEXER=vala;;
+		vala|vapi) LEXER=vala;;
+		vb.net) LEXER=vb.net;;
+		vb|bas) LEXER=vb.net;;
+		vcl) LEXER=vcl;;
+		velocity) LEXER=velocity;;
+		vm|fhtml) LEXER=velocity;;
+		verilog) LEXER=verilog;;
+		vgl) LEXER=vgl;;
+		rpf) LEXER=vgl;;
+		vhdl) LEXER=vhdl;;
+		vhdl|vhd) LEXER=vhdl;;
+		vim) LEXER=vim;;
+		vim|.vimrc|.exrc|.gvimrc|_vimrc|_exrc|_gvimrc|vimrc|gvimrc) LEXER=vim;;
+		wdiff) LEXER=wdiff;;
+		whiley) LEXER=whiley;;
+		x10) LEXER=x10;;
+		xml+evoque) LEXER=xml+evoque;;
+		xml) LEXER=xml+evoque;;
+		xml|xsl|rss|xslt|xsd|wsdl|wsf) LEXER=xml;;
+		xquery) LEXER=xquery;;
+		xqy|xquery|xq|xql|xqm) LEXER=xquery;;
+		xslt) LEXER=xslt;;
+		xsl|xslt|xpl) LEXER=xslt;;
+		xtend) LEXER=xtend;;
+		xul+mozpreproc) LEXER=xul+mozpreproc;;
+		xul.in) LEXER=xul+mozpreproc;;
+		yaml+jinja) LEXER=yaml+jinja;;
+		sls) LEXER=yaml+jinja;;
+		yaml) LEXER=yaml;;
+		yaml|yml) LEXER=yaml;;
+		zephir) LEXER=zephir;;
+		zep) LEXER=zephir;;
+
+		# wellknown type
+		TODO*|todo) LEXER=todotxt;;
+	esac
+	[ -n "${LEXER:-}" ] || return 255
+
+	echo pygmentize -f 256 -O style=native -l "$LEXER"
+}
+
+colorize-cmdline-by-bat() {
+	type bat &>/dev/null || return
+
+	local TYPE="$1"
+	local LANGUAGE
+	local FILETYPE FILETYPES=()
+	while IFS=':,' read -r -a FILETYPES; do
+		for FILETYPE in ${FILETYPES[@]:+"${FILETYPES[@]}"}; do
+			[[ "$FILETYPE" = "$TYPE" ]] || continue
+
+			LANGUAGE="$FILETYPE"
+			break
+		done
+	done < <(bat --list-languages)
+	[ -n "${LANGUAGE:-}" ] || return 255
+	echo bat --theme=Monokai --style=plain --language "$LANGUAGE"
+}
+
+colorize-cmdline-by-filetype() {
+	local TYPE="${1:?error: missing TYPE operand}"
+	TYPE="$(tolower "$TYPE")"
+
+	# TRY1. log-highlight
+	colorize-cmdline-by-log-highlight "$TYPE" && return
+
+	# TRY2. highlight
+	colorize-cmdline-by-highlight "$TYPE" && return
+
+	# TRY3. pygmentize
+	colorize-cmdline-by-pygmentize "$TYPE" && return
+
+	# TRY4. bat
+	colorize-cmdline-by-bat "$TYPE" && return
+
+	return 255
+}
+
+toupper() {
+	local STR="${1:?error: missing STR operand}"
+	if ((${BASH_VERSINFO[0]:-0} < 4)); then
+		echo "$STR" | sed -r 's/(.*)/\U\1/'
+	else
+		echo "${STR^^}"
+	fi
+}
+
+tolower() {
+	local STR="${1:?error: missing STR operand}"
+	if ((${BASH_VERSINFO[0]:-0} < 4)); then
+		# XXX: bash3
+		echo "$STR" | sed -r 's/(.*)/\L\1/'
+	else
+		echo "${STR,,}"
+	fi
+}
+
+colorize-cmdline-by-magic-header() {
+	local FILE="${1:?error: missing FILE operand}"
+
+	local MIMETYPE TYPE
+	# --mime-type not supported by file command on Cent5
+	MIMETYPE="$(file --dereference --brief -i "$FILE")"
+	TYPE="${MIMETYPE#*/}"
+	TYPE="${TYPE#x-}"
+
+	colorize-cmdline-by-filetype "$TYPE"
+}
+
+colorize-cmdline-by-shebang() {
+	local FILE="${1:?error: missing FILE operand}"
+
+	local SHEBANG TYPE
+	IFS= read -r SHEBANG < "$FILE"
+	TYPE="$(tolower "$SHEBANG")"
+
+	if [[ "$SHEBANG" =~ ^#![[:space:]]*/.*/env[[:space:]]+([^[:space:]]+) ]]; then
+		#!/usr/bin/env perl
+		TYPE="${BASH_REMATCH[1]}"
+	elif [[ "$SHEBANG" =~ ^#![[:space:]]*/.*/([^[:space:]]+) ]]; then
+		#!/usr/local/bin/perl
+		TYPE="${BASH_REMATCH[1]}"
+	elif [[ "$SHEBANG" =~ ^#[[:space:]]*-\*-.*mode:[[:space:]]*([^[:space:]]+).*-\*- ]]; then
+		# -*- coding: utf-8; mode: perl -*-
+		TYPE="${BASH_REMATCH[1]}"
+	elif [[ "$SHEBANG" =~ ^#[[:space:]]*-\*-[[:space:]]*([^[:space:]]+)[[:space:]]*-\*- ]]; then
+		# -*- perl -*-
+		TYPE="${BASH_REMATCH[1]}"
+	fi
+	[ -n "$TYPE" ] || return 255
+
+	colorize-cmdline-by-filetype "$TYPE"
+}
+
+is-colorized() {
+	command grep -m1 -Esq -e $'\x1b'"\[([0-9]+(;[0-9]+)*)*[ABCDEHFGJKSTfm]" "$@"
+}
+
+FILE=
+PAGER=
+FILTER=
+HINTS=()
+while [ $# != 0 ]; do
+	case "$1" in
+		-h|--help|--usage)
+			usage
+			exit 0
+			;;
+		-x|--debug)
+			set -o xtrace
+			;;
+		--filter)
+			FILTER="$2"
+			shift
+			;;
+		--filter=*)
+			FILTER="${1#*=}"
+			;;
+		--pager)
+			PAGER="$2"
+			shift
+			;;
+		--pager=*)
+			PAGER="${1#*=}"
+			;;
+		--type|--lexer|--syntax)
+			HINTS+=(--type "$2")
+			shift
+			;;
+		--type=*|--lexer=*|--syntax=*)
+			HINTS+=(--type "${1#*=}")
+			;;
+		--failsafe|--force)
+			HINTS+=(--force)
+			;;
+		-|/dev/stdin)
+			;;
+		*)
+			if [ -n "${FILE:-}" ]; then
+				echo "error: garbage option: $1" >&2
+				exit 1
+			fi
+			FILE="$1"
+			HINTS+=(--file "$FILE")
+			;;
+	esac
+	shift
+done
+if [ -n "${FILE:-}" ] && [ ! -e "$FILE" ]; then
+	echo "error: no such file: $FILE" >&2
+	exit 1
+fi
+
+# build colorzier cmdline
+COLORIZER=()
+if [ -z "${FILE:-}" ] || ! is-colorized "$FILE"; then
+	# XXX: no readarray command on Cent5
+	for ARG in $(colorize-cmdline "${HINTS[@]}"); do COLORIZER+=("$ARG"); done
+	if [ ${#COLORIZER[@]} = 0 ]; then
+		echo "error: unable to detect colorizer for ${FILE:-/dev/stdin}(${TYPE:-no-type})" >&2
+		exit 1
+	fi
+fi
+
+# build cmdline
+CMDLINE=()
+
+# add first command
+if [ -n "${FILTER:-}" ]; then
+	CMDLINE=("$FILTER")
+else
+	CMDLINE=("${COLORIZER[@]:-cat}")
+fi
+# add file argument
+if [ -n "${FILE:-}" ]; then
+	CMDLINE+=("$(printf "%q" "$FILE")")
+fi
+# add colorizer command
+if [ -n "${FILTER:-}" ]; then
+	CMDLINE+=(${COLORIZER[@]:+"| ${COLORIZER[@]}"})
+fi
+
+if [ "${COLORIZER[0]:-}" = highlight ]; then
+	# XXX: highlightコマンドの余計な出力を調整
+	CMDLINE+=("|" command perl -e "'use IO::Handle; autoflush STDOUT 1; while (<>) {if (eof && \$_ =~ /^\\x1b\\[m$/) {if (\$prev =~ /^\\x1b\\[38;5;252m\\x1b\\[m$/) {\$prev = undef; \$_ = undef;} elsif (\$prev =~ /\\x1b\\[m$/) {\$_ = undef}}; print \$prev; \$prev = \$_;} print \$prev if defined(\$prev);'")
+fi
+
+if [ -n "${PAGER:-}" ]; then
+	CMDLINE+=(${CMDLINE[@]:+"|"} "$PAGER")
+fi
+
+eval "${CMDLINE[*]}; RESULT=\${PIPESTATUS[0]}"
+
+exit "$RESULT"

@@ -1,0 +1,136 @@
+#!/bin/bash
+# -*- coding: utf-8 -*-
+
+type file-highlight &>/dev/null || exit 1
+
+FILE=
+COLORIZEROPTS=(--failsafe)
+FORCE=no
+while [ $# != 0 ]; do
+	ARG="$1"
+	case "$ARG" in
+		-x|--debug)
+			set -o xtrace
+			COLORIZEROPTS+=(-x)
+			;;
+		-f|--force)
+			FORCE=yes
+			;;
+		*)
+			FILE="$ARG"
+			;;
+	esac
+	shift
+done
+# if [ ! -t 1 ] && [ "${FORCE:-}" = no ]; then
+# 	echo "error: not tty" >&2
+# 	exit 1
+# fi
+if [ -z "${FILE:-}" ]; then
+	echo "error: missing FILE operand" >&2
+	exit 1
+fi
+if [ ! -e "$FILE" ]; then
+	echo "error: no such file: $FILE" >&2
+	exit 1
+fi
+if [ ! -r "$FILE" ]; then
+	echo "error: unable to read file: $FILE" >&2
+	exit 1
+fi
+if [ -d "$FILE" ]; then
+	exec ls -alF -- "$FILE"
+fi
+
+if type nkf &>/dev/null; then
+	# NOTE: メールやログの場合はファイルの途中にバイナリがでてくるので大めに取る
+	ENCODE="$(head --bytes=100000 "$FILE" | nkf -g)"
+	if ((${BASH_VERSINFO[0]:-0} < 4)); then
+		ENCODE="$(echo "$ENCODE" | sed -r 's/(.*)/\U\1/')"
+	else
+		ENCODE="${ENCODE^^}"
+	fi
+
+	if [ "$ENCODE" = BINARY ]; then
+		HINT="${FILE##*/}"
+		while [ -n "${HINT:-}" ]; do
+			if ((${BASH_VERSINFO[0]:-0} < 4)); then
+				HINT="$(echo "$HINT" | sed -r 's/(.*)/\L\1/')"
+			else
+				HINT="${HINT,,}"
+			fi
+			case "$HINT" in
+				*.pdf)
+					type pdftotext &>/dev/null || exit 1
+					if pdftotext -nopgbrk -q "$FILE" - 2>/dev/null | command grep -q -m1 .; then
+						exec pdftotext -q "$FILE" -
+					fi
+					;;
+				*.cap|*.pcap|*.pcapng)
+					type tcpdump &>/dev/null || exit 1
+					tcpdump -tttt -nn -q -r "$FILE" | log-highlight
+					exit $?
+					;;
+				# NOTE: lesspipe.shからの移植
+				*.tar)
+					exec tar tvvf "$FILE"
+					;;
+				*.tgz|*.tar.gz|*.tar.[zZ])
+					exec tar tzvvf "$FILE"
+					;;
+				*.tar.xz)
+					exec tar Jtvvf "$FILE"
+					;;
+				*.xz|*.lzma)
+					exec xz -dc -- "$FILE"
+					;;
+				*.tar.lz)
+					exec tar --lzip -tvvf "$FILE"
+					;;
+				*.lz)
+					exec lzip -dc -- "$FILE"
+					;;
+				*.tar.bz2|*.tbz2)
+					bzip2 -dc -- "$FILE" | tar tvvf -
+					exit $?
+					;;
+				*.[zZ]|*.gz)
+					exec gzip -dc -- "$FILE"
+					;;
+				*.bz2)
+					exec bzip2 -dc -- "$FILE"
+					;;
+				*.zip|*.jar|*.nbm)
+					exec zipinfo -- "$FILE"
+					;;
+				*.rpm)
+					exec rpm -qpivl --changelog --nomanifest -- "$FILE"
+					;;
+				*.cpi|*.cpio)
+					exec cpio -itv < "$FILE"
+					;;
+			esac
+			[ "$HINT" = "${HINT%.*}" ] && break
+			HINT="${HINT%.*}"
+		done
+
+		# 未対応形式のファイル
+		exit 1
+	fi
+
+	if [ "$ENCODE" != ASCII ] && [ "$ENCODE" != "${LANG#*.}" ]; then
+		# 必要な場合はエンコード
+		COLORIZEROPTS+=("--filter=nkf")
+	fi
+fi
+
+# FIXME: テキストファイルの色付け処理が重すぎるので、ファイルサイズに上限を設ける・・・
+FILESIZE="$(stat --format="%s" "$FILE")"
+if (( 10000000 < "${FILESIZE:-0}" )); then
+	exit 1
+fi
+
+# NOTE: lessのC-F中にC-Cで中断させたいので、SIGINTは無視する
+trap '' SIGINT
+
+exec file-highlight ${COLORIZEROPTS[@]:+"${COLORIZEROPTS[@]}"} "$FILE"

@@ -1,0 +1,179 @@
+#!/bin/bash
+# -*- coding: utf-8 -*-
+
+# Usage: $BASH_SOURCE [OPTIONS...] [--] [COMMANDS...] TARGET
+show-info-with-clamp() {
+	local LINE=$((${LINES:-50} * 2))
+	local CMDS=()
+	local TARGET="${*:$#}"
+	while [ $# != 1 ]; do
+		case "$1" in
+			-l|--lines)
+				LINE="$2"
+				shift
+				;;
+			--lines=*)
+				LINE="${1#*=}"
+				;;
+			-l[0-9]*)
+				LINE="${1:2}"
+				;;
+			--)
+				shift
+				CMDS=("${@:1:$#-1}")
+				break
+				;;
+			*)
+				CMDS=("${@:1:$#-1}")
+				break
+				;;
+		esac
+		shift
+	done
+	if [ ! -e "$TARGET" ]; then
+		echo "error: no such file: '$TARGET'" >&2
+		return 255
+	fi
+	if [ "${#CMDS[@]}" = 0 ]; then
+		CMDS=(command cat)
+	fi
+	local PRECMD=""
+	if [ "${UID:-0}" != 0 ] && [ ! -r "$TARGET" ]; then
+		PRECMD=sudo
+	fi
+
+	# NOTE: PIPE エラーで $CMD が失敗するので tail を挟む
+	${PRECMD:+"$PRECMD"} "${CMDS[@]}" "$TARGET" | command tail -n +1 | command head --lines="$LINE"
+
+	return "${PIPESTATUS[0]}"
+}
+
+TARGET=
+DIRSTYLE=tree
+LINE=$((${LINES:-50} * 2))
+SYNTAX=conf
+FILESTAT=yes
+while [ $# != 0 ]; do
+	case "$1" in
+		-x|--debug)
+			set -x
+			;;
+		-l|--line|--lines)
+			LINE="$2"
+			shift
+			;;
+		--line=*|--lines=*)
+			LINE="${1#*=}"
+			;;
+		--syntax)
+			SYNTAX="$2"
+			shift
+			;;
+		--syntax=*)
+			SYNTAX="${1#*=}"
+			;;
+		--no-stat)
+			FILESTAT=no
+			;;
+		-t|--tree)
+			DIRSTYLE=tree
+			;;
+		-)
+			TARGET=/dev/stdin
+			;;
+		--)
+			TARGET="$2"
+			shift
+			;;
+		*)
+			if [ -n "$TARGET" ]; then
+				echo "error: garbage option: $*" >&2
+				exit 1
+			fi
+			TARGET="$1"
+			;;
+	esac
+	shift
+done
+if [ -z "$TARGET" ] && [ -p /dev/stdin ]; then
+	TARGET=/dev/stdin
+fi
+
+if [ -z "$TARGET" ]; then
+	echo "error: Usage: $0 [OPTION] [--] [FILE]" >&2
+	exit 1
+fi
+
+if [ ! -e "$TARGET" ]; then
+	if ! rpm --query --quiet "$TARGET"; then
+		echo "error: unable to indentify '$TARGET'" >&2
+		exit 1
+	fi
+fi
+
+# stat
+if [ "${FILESTAT:-}" = yes ] && [ -e "$TARGET" ]; then
+	command stat --format "%F %s %G/%U (%a/%A) %y" "$TARGET"
+	echo
+	echo ---
+fi
+
+# rpm package
+if rpm --query --quiet "$TARGET"; then
+	exec rpm --query --info "$TARGET"
+fi
+
+# directory
+if [ -d "$TARGET" ]; then
+	PRECMD=""
+	if [ "${UID:-0}" != 0 ] && [ ! -r "$TARGET" ]; then
+		PRECMD=sudo
+	fi
+	if [ "$DIRSTYLE" = ls ]; then
+		# NOTE: lesspipe.sh がディレクトリの色付けをしないので自前で実施
+		exec ${PRECMD:+"$PRECMD"} find "${TARGET%/}" -exec ls --color=always -ldaF -- {} +
+	else
+		exec ${PRECMD:+"$PRECMD"} tree -C -L 1 --charset=C "$TARGET"
+	fi
+	exit $?
+fi
+
+# regular file
+if [ -f "$TARGET" ]; then
+	# empty file
+	if [ ! -s "$TARGET" ]; then
+		echo "'$TARGET' is empty file"
+		command stat "$TARGET"
+		exit 0
+	fi
+
+	# wellknown filetype
+	if show-info-with-clamp --lines="$LINE" -- lesspipe.sh "$TARGET"; then
+		exit 0
+	fi
+
+	# unknown filetype
+	# NOTE: "--mime-type" option not supported by "file" command on Cent5
+	# NOTE: "charset=binary" not printed by "file" command on Cent5
+	if ! command file --dereference -i "$TARGET" | command grep -Fwis -v charset=binary | command grep -Fwiqs charset; then
+		DUMPCMDS=()
+		HEXYL="$(type -P hexyl)"
+		if [ -n "${HEXYL:-}" ]; then
+			DUMPCMDS=("$HEXYL" --border ascii)
+		else
+			DUMPCMDS=(hexdump -C)
+		fi
+		show-info-with-clamp --lines="$LINE" -- "${DUMPCMDS[@]}" "$TARGET"
+		exit $?
+	fi
+fi
+
+# failsafe
+STYLE=xoria256
+VERSION="$(highlight --version | awk '$3 ~ /^[0-9.]+$/{split($3, v, "."); print v[1]; exit}')"
+if (("${VERSION:-0}" < 3)); then
+	STYLE=golden
+fi
+show-info-with-clamp --lines="$LINE" -- highlight --tab 8 -O xterm256 --failsafe --syntax="$SYNTAX" --style="$STYLE" "$TARGET"
+
+exit $?
