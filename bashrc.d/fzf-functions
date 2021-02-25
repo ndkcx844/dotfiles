@@ -918,20 +918,26 @@ function fzf-search() {
 	done
 }
 
-alias fzf-rg='fzf-search --engine=rg'
-alias rg='fzf-rg'
-alias ra='fzf-rg --all'
+if executable --command rg; then
+	alias fzf-rg='fzf-search --engine=rg'
+	alias rg='fzf-rg'
+	alias ra='fzf-rg --all'
+fi
 
-alias fzf-pt='fzf-search --engine=pt'
-alias fp='fzf-pt'
-alias fpt='fzf-pt'
-alias pa='fzf-pt --all'
+if executable --command pt; then
+	alias fzf-pt='fzf-search --engine=pt'
+	alias fp='fzf-pt'
+	alias fpt='fzf-pt'
+	alias pa='fzf-pt --all'
+fi
 
-alias fzf-ag='fzf-search --engine=ag'
-alias ae='fzf-ag'
-alias aa='fzf-ag --all'
-alias aghe='ae'
-alias ag='fzf-ag'
+if executable --command ag; then
+	alias fzf-ag='fzf-search --engine=ag'
+	alias ae='fzf-ag'
+	alias aa='fzf-ag --all'
+	alias aghe='ae'
+	alias ag='fzf-ag'
+fi
 
 alias fzf-grep='fzf-search --engine=grep'
 alias ge='fzf-grep'
