@@ -1,0 +1,193 @@
+;; タブ幅のデフォルトを8に
+(setq-default tab-width 8)
+(setq tab-width 8)
+
+;; perlのtabインデントを8文字に
+(setq-default perl-indent-level 8)
+
+;; ツールバーを消す
+(if (and (>= emacs-major-version 24) (>= emacs-minor-version 5))
+    (tool-bar-mode -1))
+
+;; メニューバーを消す
+(menu-bar-mode -1)
+
+;; 関数名をモードラインに表示する
+(which-function-mode 1)
+
+;; 選択範囲を強調表示(リージョンをハイライト)
+(setq transient-mark-mode t)
+
+;; 選択範囲を削除キーで一括削除
+(delete-selection-mode t)
+
+;; 行全体をカット(改行も切り詰め)
+(setq kill-whole-line t)
+
+;; 読み取り専用でもカット系でコピー
+(setq kill-read-only-ok t)
+
+;;; 行末の空白を表示
+(setq-default show-trailing-whitespace t)
+
+;;; モードラインにカーソルの位置の列数を表示
+(column-number-mode t)
+
+;;; モードラインにカーソルの位置の行数を表示
+(line-number-mode t)
+
+;; "yes or no"を"y or n"に
+(fset 'yes-or-no-p 'y-or-n-p)
+
+;; 起動時の初期画面を非表示に
+(setq inhibit-startup-message t)
+
+;; バックアップファイルを作らない
+(setq backup-inhibited t)
+
+;;; 終了時にオートセーブファイルを消す
+(setq delete-auto-save-files t)
+
+;; 保存時に余計な改行と余白を削除
+(add-hook 'before-save-hook 'delete-trailing-whitespace)
+
+;; 保存時、バッファ末尾に空行が常にあるようにする
+(setq-default require-final-newline t)
+
+;; Addes the executable attribute "(chmod +x)" when the current buffer starts shebang ("#!")
+(add-hook 'after-save-hook 'executable-make-buffer-file-executable-if-script-p)
+
+;; シンボリックリンクの読み込みを許可
+(setq vc-follow-symlinks t)
+
+  ;;; 補完時に大文字小文字を区別しない
+(setq completion-ignore-case t)
+(setq read-file-name-completion-ignore-case t)
+(setq read-buffer-completion-ignore-case t)
+
+;; xterm 上でマウス操作を有効化
+(xterm-mouse-mode 1)
+(when (require 'mwheel nil 'noerror)
+  (mouse-wheel-mode t))
+
+;;; 対応する括弧を光らせる
+(show-paren-mode 1)
+;; 発動までの遅延時間
+(setq-default show-paren-delay 0)
+;; スタイル: 'expression, 'box
+(setq-default show-paren-style 'mixed)
+
+					; ;; face の設定
+					; (set-face-attribute 'show-paren-match nil
+					; 		      :background nil :foreground nil
+					; 		      :underline "#ffff00" :weight 'extra-bold)
+
+;; 改行時の自動インデントを無効
+(if (and (>= emacs-major-version 24) (>= emacs-minor-version 5))
+    (electric-indent-mode 0))
+
+;;; 改行コードのタイプをモードラインに表示
+(setq eol-mnemonic-dos  "(CRLF)")
+(setq eol-mnemonic-mac  "(CR)")
+(setq eol-mnemonic-unix "(LF)")
+
+;;; 最後のカーソル位置を保持
+(require 'saveplace)
+(setq save-place-file "~/.emacs.d/.emacs-places")
+(if (and (>= emacs-major-version 24) (>= emacs-minor-version 5))
+    (save-place-mode 1)
+  (setq-default save-place t))
+
+;; グローバルなキーバインド
+(global-set-key (kbd "C-h") 'delete-backward-char) ; 削除
+(global-set-key (kbd "C-q") 'scroll-down)                       ; PageUp
+(global-set-key (kbd "C-z") 'undo)                              ; Undo
+(global-set-key (kbd "M-?") 'help)                              ; help
+(global-set-key (kbd "<f5>") 'reload-configuration)
+(global-unset-key (kbd "M-<DEL>"))
+
+;; minibuffer で C-w で前の単語を削除
+(define-key minibuffer-local-completion-map (kbd "C-w") 'backward-kill-word)
+
+;; 現在行をハイライト
+(defface hlline-face
+  '((((class color)
+      (background dark))
+     (:background "dark slate gray"))
+    (((class color)
+      (background light))
+     (:background "DarkSeaGreen3"))
+    (t
+     ()))
+  "*Face used by hl-line.")
+
+;; (setq hl-line-face 'hlline-face)
+(setq hl-line-face 'underline) ; 下線
+(global-hl-line-mode)
+
+;; Sets indent width to TAB
+;; NOTE: bash's here document like "cat <<-EOF" recognizes
+;;       TAB at line head.
+(add-hook 'sh-mode-hook
+	  (lambda ()
+	    (defvar sh-indentation)
+	    (defvar sh-basic-offset)
+	    (setq tab-width        8)
+	    (setq indent-tabs-mode t)
+	    (setq sh-indentation   8)
+	    (setq sh-basic-offset  8)))
+
+;;; isearch
+(defun isearch-kill-backward-word()
+  "isearch 中の先方単語削除"
+  (interactive)
+  (let ((len (length isearch-string)))
+    (if (= 0 len)
+	(ding)
+      (when (string-match "\\(\\w+[[:space:]]*$\\)" isearch-string)
+	(kill-new (match-string 1 isearch-string)))
+      (setq isearch-string (replace-regexp-in-string "\\w+[[:space:]]*$" "" isearch-string))
+      (when (= len (length isearch-string))
+	(setq isearch-string (replace-regexp-in-string "\\W+$" "" isearch-string)))
+      (setq isearch-message (mapconcat 'isearch-text-char-description isearch-string ""))))
+  (if isearch-other-end (goto-char isearch-other-end))
+  (isearch-search)
+  (isearch-push-state)
+  (isearch-update))
+
+(defun isearch-kill-whole-line()
+  "isearch 文字列の消去"
+  (interactive)
+  (kill-new isearch-string)
+  (setq isearch-string "")
+  (setq isearch-message (mapconcat 'isearch-text-char-description isearch-string ""))
+  (if isearch-other-end (goto-char isearch-other-end))
+  (isearch-search)
+  (isearch-push-state)
+  (isearch-update))
+
+;; kill
+(define-key isearch-mode-map (kbd "C-w") 'isearch-kill-backward-word)
+(define-key isearch-mode-map (kbd "C-k") 'isearch-kill-whole-line)
+
+;; [[:space:]] のあいまいマッチをトグル
+(define-key isearch-mode-map (kbd "M-s") 'isearch-toggle-lax-whitespace)
+
+;; 範囲選択時はその文字列をクエリとして入力された状態にする
+(defadvice isearch-mode (around isearch-mode-default-string (forward &optional regexp op-fun recursive-edit word-p) activate)
+  (if (and transient-mark-mode mark-active (not (eq (mark) (point))))
+      (progn
+	(isearch-update-ring (buffer-substring-no-properties (mark) (point)))
+	(deactivate-mark)
+	ad-do-it
+	(if (not forward)
+	    (isearch-repeat-backward)
+	  (goto-char (mark))
+	  (isearch-repeat-forward)))
+    ad-do-it))
+
+;; isearch 起動時にシンボルを自動入力
+(global-set-key (kbd "C-M-s")   'isearch-forward-symbol-at-point)
+
+  ;;; grep の再帰をデフォルト有効
+(setq grep-command "grep -nHIr -e ")
