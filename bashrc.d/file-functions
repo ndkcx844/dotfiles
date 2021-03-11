@@ -783,10 +783,10 @@ function diff() {
 			;;
 	esac
 	if [ "${COLOR:-}" = yes ] && [ -z "${COLORIZER:-}" ]; then
-		if executable grc; then
-			PRECMDS+=(grc --stdout --stderr --colour on)
-		elif executable diff-so-fancy; then
+		if executable diff-so-fancy; then
 			COLORIZER="diff-so-fancy"
+		elif executable grc; then
+			PRECMDS+=(grc --stdout --stderr --colour on)
 		else
 			COLORIZER="file-highlight --type=diff"
 		fi
