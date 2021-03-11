@@ -11,7 +11,7 @@ fi
 if [ -d ~/.bashrc.d ]; then
 	for FILE in ~/.bashrc.d/*; do
 		[ -r "$FILE" ] || continue
-		IGNORE_REGEX='(^(\#|\.\#)|\.(~|ba?k|ori?g|rej|swp|dpkg*|rpm(orig|new|save))$)'
+		IGNORE_REGEX='(^(\#|\.\#)|~$|\.(ba?k|ori?g|rej|swp|dpkg*|rpm(orig|new|save))$)'
 		[[ ${FILE##*/} =~ $IGNORE_REGEX ]] && continue
 
 		. "$FILE"
