@@ -453,7 +453,8 @@ function pt() {
 			FILTEROPTS+=("with_linenumber=$SHOWNUMBERS")
 		fi
 		if [ "${#FILTEROPTS[@]}" != 0 ]; then
-			FILTEROPTS+=("pattern=$(IFS="|"; echo "(${PATTERNS[*]})")")
+			PATTERN="$(IFS="|"; echo "(${PATTERNS[*]})")"
+			FILTEROPTS+=("pattern=${PATTERN//\\/\\\\}")
 		fi
 		if [ "$SHOWFILENAME" != no ]; then
 			FILTEROPTS+=("with_filename=$SHOWFILENAME")
