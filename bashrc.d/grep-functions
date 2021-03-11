@@ -763,6 +763,9 @@ function ag() {
 }
 alias a='ag'
 alias aag='ag'
+if ! executable --command ag; then
+	alias ag='grep'
+fi
 
 function grep() {
 	local ARGS=() # NOTE: デフォルト除外リストの無効化があるので後で追加する
