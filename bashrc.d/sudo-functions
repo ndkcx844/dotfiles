@@ -280,8 +280,8 @@ function rpm() {
 		CMDOPTS+=("$QUERY")
 	fi
 
-	local RESULT
-	RESULT="$("${RPMCMDS[@]}" ${CMDOPTS[@]:+"${CMDOPTS[@]}"})"
+	local RESULT RETVAL=0
+	RESULT="$("${RPMCMDS[@]}" ${CMDOPTS[@]:+"${CMDOPTS[@]}"})" || RETVAL=$?
 	if [ "${RESULT:-}" ]; then
 		# NOTE: rpm -q{,i,f}でパッケージ名をcbcopy
 		if [ "${CLIP:-}" = yes ] && [ -n "${RPMNAME:-}" ]; then
@@ -289,6 +289,8 @@ function rpm() {
 		fi
 		echo "$RESULT"
 	fi
+
+	return $RETVAL
 }
 
 # Usage: $FUNCNAME [OPTION...] -- ORGCMDS...
