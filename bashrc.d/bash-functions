@@ -9,6 +9,7 @@ alias sudu='sudo'
 alias tyep='type'
 alias bahs='bash'
 alias unmount='umount'
+alias tial='tail'
 
 alias ffg='fg'
 alias fgfg='fg'
