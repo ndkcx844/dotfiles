@@ -7,9 +7,9 @@ export LESS="--RAW-CONTROL-CHARS --ignore-case --quit-if-one-screen --squeeze-bl
 # NOTE: lesspipe.sh on CentOS, lesspipe on Ubuntu
 LESSPIPE="$(command type -P lesspipe.sh || command type -P lesspipe)"
 if command grep -Fwqs 'export LESSOPEN="||' "$LESSPIPE"; then
-	export LESSOPEN="|| /usr/bin/env "${LESSPIPE##*/}" %s"
+	export LESSOPEN="|| /usr/bin/env ${LESSPIPE##*/} %s"
 else
-	export LESSOPEN="| /usr/bin/env "${LESSPIPE##*/}" %s" # for co51chroot
+	export LESSOPEN="| /usr/bin/env ${LESSPIPE##*/} %s" # for co51chroot
 fi
 
 function less() {
@@ -79,6 +79,7 @@ function less() {
 			;;
 	esac
 
+	# TODO: sudo-wrap-cmdline化
 	sudo LESS="$LESS" LESSOPEN="${LESSOPEN:-}" "less" ${LESSOPTS[@]:+"${LESSOPTS[@]}"} ${FILES[@]:+"${FILES[@]}"}
 	# XXX: sudoコマンドによって変更されている履歴ファイルの所有者を元に戻す
 	local LESSHISTORY="$HOME"/.lesshst
