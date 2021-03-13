@@ -137,6 +137,12 @@
 	    (setq sh-indentation   8)
 	    (setq sh-basic-offset  8)))
 
+(add-hook 'awk-mode-hook
+	  (lambda ()
+	    (setq tab-width        8)
+	    (setq indent-tabs-mode t)
+	    (setq c-basic-offset  8)))
+
 ;;; isearch
 (defun isearch-kill-backward-word()
   "isearch 中の先方単語削除"
