@@ -133,6 +133,10 @@ function cat() {
 			-A|--show-all|-b|--number-nonblank|-e|-E|--show-ends|-n|--number|-s|--squeeze-blank|-t|-T|--show-tabs|-u|-v|--show-nonprinting)
 				CATOPTS+=("$ARG")
 				;;
+			--)
+				FILES+=("${@:2}")
+				break
+				;;
 			*)
 				FILES+=("$ARG")
 				;;
@@ -157,9 +161,9 @@ function cat() {
 		fi
 		if [ "${NEEDS_FALLBACK:-}" = yes ]; then
 			if [ -r ${FILE:+"$FILE"} ]; then
-				command cat ${FILE:+"$FILE"}
+				command cat -- ${FILE:+"$FILE"}
 			else
-				sudo "cat" ${FILE:+"$FILE"}
+				sudo "cat" -- ${FILE:+"$FILE"}
 			fi
 		fi
 	done | command cat ${CATOPTS[@]:+"${CATOPTS[@]}"}
